@@ -44,6 +44,7 @@ const INDONESIA_BEARING = -4;
 interface SpatialMap3DProps {
   regions: RegionRecord[];
   selectedRegion: RegionRecord;
+  fiscalYear?: number;
   onSelectRegion: (id: string) => void;
 }
 
@@ -52,6 +53,8 @@ interface HoverFeatureInfo {
   province_code: string;
   name: string;
   island: string;
+  fiscal_year: number | null;
+  fiscal_cluster: "Tinggi" | "Sedang" | "Rendah" | null;
   kab_kota_count: number;
   total_apbd_triliun: number;
   serapan_belanja_pct: number;
@@ -66,8 +69,10 @@ interface HoverFeatureInfo {
 export function SpatialMap3D({
   regions,
   selectedRegion,
+  fiscalYear,
   onSelectRegion,
 }: SpatialMap3DProps) {
+  const activeFiscalYear = fiscalYear ?? selectedRegion.fiscal_year;
   const containerRef = React.useRef<HTMLDivElement | null>(null);
   const mapRef = React.useRef<import("maplibre-gl").Map | null>(null);
   const styleReadyRef = React.useRef(false);
@@ -329,20 +334,36 @@ export function SpatialMap3D({
 
           if (feature.properties) {
             const p = feature.properties;
+            const parseNum = (v: unknown): number | null => {
+              if (v === null || v === undefined || v === "" || v === "null") {
+                return null;
+              }
+              const n = Number(v);
+              return Number.isFinite(n) ? n : null;
+            };
+            const clusterRaw = String(p.fiscal_cluster ?? "");
+            const fiscalCluster =
+              clusterRaw === "Tinggi" ||
+              clusterRaw === "Sedang" ||
+              clusterRaw === "Rendah"
+                ? clusterRaw
+                : null;
             setHovered({
               id: String(p.id),
               province_code: String(p.province_code ?? p.bps_code ?? ""),
               name: String(p.name),
               island: String(p.island),
-              kab_kota_count: Number(p.kab_kota_count ?? 0),
-              total_apbd_triliun: Number(p.total_apbd_triliun),
-              serapan_belanja_pct: Number(p.serapan_belanja_pct ?? 0),
-              hkpd_score: Number(p.hkpd_score),
+              fiscal_year: parseNum(p.fiscal_year),
+              fiscal_cluster: fiscalCluster,
+              kab_kota_count: parseNum(p.kab_kota_count) ?? 0,
+              total_apbd_triliun: parseNum(p.total_apbd_triliun) ?? 0,
+              serapan_belanja_pct: parseNum(p.serapan_belanja_pct) ?? 0,
+              hkpd_score: parseNum(p.hkpd_score) ?? 0,
               grade: (p.grade as "hijau" | "kuning" | "merah") ?? "kuning",
-              grade_label: String(p.grade_label),
-              pegawai_pct: Number(p.pegawai_pct),
-              modal_pct: Number(p.modal_pct ?? p.infrastruktur_pct),
-              ipm: p.ipm !== null && p.ipm !== undefined ? Number(p.ipm) : null,
+              grade_label: String(p.grade_label ?? ""),
+              pegawai_pct: parseNum(p.pegawai_pct) ?? 0,
+              modal_pct: parseNum(p.modal_pct ?? p.infrastruktur_pct) ?? 0,
+              ipm: parseNum(p.ipm),
             });
           }
         };
@@ -487,7 +508,7 @@ export function SpatialMap3D({
             <span>Peta Spasial 3D Nusantara • CARTO × Batas BIG/BPS</span>
           </div>
           <CardTitle className="mt-1 text-base">
-            Tinggi Ekstrusi = Skala APBD TA 2025 • Warna = Rapor Fiskal
+            Tinggi Ekstrusi = Skala APBD TA {activeFiscalYear} • Warna = Rapor Fiskal
           </CardTitle>
           <CardDescription className="text-xs">
             38 Provinsi Indonesia (termasuk 4 DOB Papua). Arahkan kursor untuk
@@ -584,7 +605,7 @@ export function SpatialMap3D({
           )}
 
           {/* Floating Editorial Inspection Card */}
-          <div className="pointer-events-none absolute left-3 top-3 z-10 w-[268px] rounded-md border border-border bg-card/95 p-3 shadow-md backdrop-blur-sm">
+          <div className="pointer-events-none absolute left-3 top-3 z-10 w-[248px] max-w-[calc(100%-56px)] rounded-md border border-border bg-card/95 p-3 shadow-md backdrop-blur-sm sm:w-[268px]">
             {hovered ? (
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between gap-2">
@@ -597,6 +618,7 @@ export function SpatialMap3D({
                 </div>
                 <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
                   Kode {hovered.province_code} • {hovered.island}
+                  {hovered.fiscal_cluster ? ` • Klaster ${hovered.fiscal_cluster}` : ""}
                   {hovered.kab_kota_count > 0
                     ? ` • ${hovered.kab_kota_count} Kab/Kota`
                     : ""}
@@ -604,7 +626,7 @@ export function SpatialMap3D({
                 <div className="grid grid-cols-2 gap-1.5 pt-1 font-mono text-[11px] tabular-nums">
                   <div className="rounded border border-border/70 bg-muted/50 px-2 py-1">
                     <span className="block text-[9px] uppercase text-muted-foreground">
-                      APBD TA 2025
+                      APBD TA {hovered.fiscal_year ?? activeFiscalYear}
                     </span>
                     <strong className="text-foreground">
                       Rp {formatNumberId(hovered.total_apbd_triliun, 2)} T
@@ -622,7 +644,7 @@ export function SpatialMap3D({
                 <div className="flex items-center justify-between pt-0.5 font-mono text-[10px] text-muted-foreground tabular-nums">
                   <span>Serapan: {hovered.serapan_belanja_pct}%</span>
                   <span>
-                    IPM BPS: {hovered.ipm !== null ? hovered.ipm : "N/A"}
+                    IPM BPS: {hovered.ipm !== null ? hovered.ipm : "—"}
                   </span>
                 </div>
               </div>
@@ -643,7 +665,7 @@ export function SpatialMap3D({
           </div>
 
           {/* Floating Cartographic Legend Bottom-Left */}
-          <div className="pointer-events-none absolute bottom-3 left-3 z-10 flex flex-wrap items-center gap-3 rounded-md border border-border bg-card/95 px-3 py-1.5 font-mono text-[10px] shadow-sm backdrop-blur-sm">
+          <div className="pointer-events-none absolute bottom-3 left-3 z-10 flex max-w-[calc(100%-24px)] flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-border bg-card/95 px-3 py-1.5 font-mono text-[10px] shadow-sm backdrop-blur-sm">
             <span className="flex items-center gap-1.5 font-semibold text-foreground">
               <span className="h-2.5 w-2.5 rounded-[2px] bg-emerald-600" />
               Hijau (≥80)

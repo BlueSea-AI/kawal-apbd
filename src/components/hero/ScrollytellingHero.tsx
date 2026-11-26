@@ -382,7 +382,7 @@ export function ScrollytellingHero({
           {/* Right 5 Columns — Institutional Front-Page Fiscal Ledger */}
           <div className="lg:col-span-5">
             <aside
-              aria-label="Ikhtisar Fiskal Nasional TA 2025"
+              aria-label={`Ikhtisar Fiskal Nasional TA ${summary.fiscal_year}`}
               className="overflow-hidden rounded-lg border border-border bg-card"
             >
               {/* Ledger Masthead */}

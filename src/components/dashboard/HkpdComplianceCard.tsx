@@ -22,7 +22,12 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import type { RegionRecord } from "@/types/apbd";
-import { cn, getGradeStyles } from "@/lib/utils";
+import {
+  cn,
+  getEntityPeerGroupLabel,
+  getFiscalClusterStyles,
+  getGradeStyles,
+} from "@/lib/utils";
 
 interface HkpdComplianceCardProps {
   region: RegionRecord;
@@ -31,6 +36,8 @@ interface HkpdComplianceCardProps {
 export function HkpdComplianceCard({ region }: HkpdComplianceCardProps) {
   const { hkpd, expenditure, revenue, provenance } = region;
   const gradeStyle = getGradeStyles(hkpd.grade);
+  const clusterStyle = getFiscalClusterStyles(region.fiscal_cluster);
+  const peerGroupLabel = getEntityPeerGroupLabel(region.level);
 
   const isFullHkpdInfra = hkpd.infra_basis === "uu_hkpd_40";
 
@@ -100,10 +107,10 @@ export function HkpdComplianceCard({ region }: HkpdComplianceCardProps) {
     <Card className="flex h-full flex-col">
       <CardHeader className="border-b border-border pb-3.5">
         <div className="flex items-start justify-between gap-2">
-          <div>
+          <div className="min-w-0">
             <div className="flex items-center gap-1.5 font-mono text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
               <Scale
-                className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-400"
+                className="h-3.5 w-3.5 shrink-0 text-emerald-700 dark:text-emerald-400"
                 aria-hidden="true"
               />
               <span>Audit Postur &amp; UU HKPD TA {region.fiscal_year}</span>
@@ -119,6 +126,29 @@ export function HkpdComplianceCard({ region }: HkpdComplianceCardProps) {
           <Badge variant={hkpd.grade} className="shrink-0 font-mono text-xs tabular-nums">
             {hkpd.score} / 100
           </Badge>
+        </div>
+
+        {/* Apple-to-Apple Fiscal Capacity Cluster & Stratified Peer Rank */}
+        <div
+          className="mt-2.5 flex flex-wrap items-center gap-1.5"
+          aria-label={`${clusterStyle.label}, Peringkat #${region.fiscal_cluster_rank} dari ${region.fiscal_cluster_total} ${peerGroupLabel} Setara`}
+        >
+          <span
+            className={cn(
+              "inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border px-2 py-0.5 font-mono text-[11px] font-semibold",
+              clusterStyle.badgeClass
+            )}
+          >
+            <span
+              className={cn("h-1.5 w-1.5 shrink-0 rounded-full", clusterStyle.dotClass)}
+              aria-hidden="true"
+            />
+            {clusterStyle.label}
+          </span>
+          <span className="inline-flex items-center whitespace-nowrap rounded-md border border-border bg-secondary/60 px-2 py-0.5 font-mono text-[11px] font-medium text-foreground tabular-nums">
+            Peringkat #{region.fiscal_cluster_rank} dari {region.fiscal_cluster_total}{" "}
+            {peerGroupLabel} Setara
+          </span>
         </div>
       </CardHeader>
 
@@ -196,14 +226,17 @@ export function HkpdComplianceCard({ region }: HkpdComplianceCardProps) {
           {expenditure.pendidikan_pct === null && (
             <div className="rounded-md border border-border bg-muted/50 p-3 text-[11px] leading-relaxed text-muted-foreground">
               <div className="flex items-center gap-1.5 font-mono font-semibold uppercase tracking-wide text-foreground">
-                <Info className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" aria-hidden="true" />
-                <span>Fungsi Pendidikan &amp; Kesehatan: Data Belum Dipublikasikan Resmi</span>
+                <Info
+                  className="h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400"
+                  aria-hidden="true"
+                />
+                <span>Fungsi Pendidikan &amp; Kesehatan: Belum Dipublikasikan</span>
               </div>
               <p className="mt-1">
                 Endpoint terbuka DJPK (<code>csv_apbd</code>) merilis Klasifikasi
-                Ekonomi, bukan Klasifikasi Fungsi. Kawal APBD menampilkan{" "}
-                <strong className="text-foreground">null</strong> tanpa estimasi
-                fiktif hingga file resmi diunggah ke <code>data/raw/</code>.
+                Ekonomi, bukan Klasifikasi Fungsi. Kawal APBD menandai kolom ini{" "}
+                <strong className="text-foreground">Belum Dipublikasikan</strong>{" "}
+                tanpa estimasi fiktif hingga data resmi tersedia.
               </p>
             </div>
           )}

@@ -11,7 +11,15 @@ import {
   Tooltip,
   Legend,
 } from "recharts";
-import { Swords, Trophy, ArrowLeftRight, Scale } from "lucide-react";
+import {
+  Swords,
+  Trophy,
+  ArrowLeftRight,
+  Scale,
+  Equal,
+  Info,
+  CheckCircle2,
+} from "lucide-react";
 import {
   Card,
   CardContent,
@@ -23,10 +31,17 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { RegionCombobox } from "@/components/ui/region-combobox";
 import type { RegionRecord } from "@/types/apbd";
-import { cn, formatMiliarToTriliun, getGradeStyles } from "@/lib/utils";
+import { areAppleToApplePeers, findComparablePeer } from "@/lib/audit-engine";
+import {
+  cn,
+  formatMiliarToTriliun,
+  getEntityPeerGroupLabel,
+  getFiscalClusterStyles,
+  getGradeStyles,
+} from "@/lib/utils";
 
 const CURATED_DUELS = [
-  { label: "Jakarta vs Yogyakarta", a: "prov-31", b: "prov-34" },
+  { label: "Jakarta vs Jawa Barat", a: "prov-31", b: "prov-32" },
   { label: "Surabaya vs Bandung", a: "kota-3578", b: "kota-3273" },
   { label: "Kaltim vs Papua Pegunungan", a: "prov-64", b: "prov-95" },
   { label: "Kab. Badung vs Maluku", a: "kab-5103", b: "prov-81" },
@@ -54,9 +69,22 @@ export function AduEfisiensiDaerah({
     regions.find((r) => r.id === regionBId) ??
     regions[Math.min(1, regions.length - 1)];
 
+  const isSameLevel =
+    (regionA.level === "provinsi") === (regionB.level === "provinsi");
+  const isAppleToApple = areAppleToApplePeers(regionA, regionB);
+  const peerLabelA = getEntityPeerGroupLabel(regionA.level);
+  const peerLabelB = getEntityPeerGroupLabel(regionB.level);
+
   const swapRegions = () => {
     setRegionAId(regionB.id);
     setRegionBId(regionA.id);
+  };
+
+  const handleMatchClusterPeer = () => {
+    const peer = findComparablePeer(regionA, regions, regionB.id);
+    if (peer) {
+      setRegionBId(peer.id);
+    }
   };
 
   const comparisons = React.useMemo(
@@ -69,6 +97,7 @@ export function AduEfisiensiDaerah({
         fmtB: `${regionB.hkpd.score} / 100`,
         higherWins: true,
         max: 100,
+        comparable: true,
       },
       {
         label: "Belanja Pegawai (Lebih Rendah Lebih Baik)",
@@ -78,6 +107,7 @@ export function AduEfisiensiDaerah({
         fmtB: `${regionB.expenditure.pegawai_pct}%`,
         higherWins: false,
         max: 55,
+        comparable: true,
       },
       {
         label: "Belanja Modal / Aset Publik (DJPK)",
@@ -87,6 +117,7 @@ export function AduEfisiensiDaerah({
         fmtB: `${regionB.expenditure.modal_pct}%`,
         higherWins: true,
         max: 45,
+        comparable: true,
       },
       {
         label: "Realisasi Penyerapan Belanja",
@@ -96,6 +127,7 @@ export function AduEfisiensiDaerah({
         fmtB: `${regionB.expenditure.serapan_belanja_pct}%`,
         higherWins: true,
         max: 110,
+        comparable: true,
       },
       {
         label: "Kemandirian Fiskal (Rasio PAD)",
@@ -105,15 +137,17 @@ export function AduEfisiensiDaerah({
         fmtB: `${regionB.revenue.pad_ratio_pct}%`,
         higherWins: true,
         max: 100,
+        comparable: true,
       },
       {
         label: "Indeks Pembangunan Manusia (IPM BPS)",
         valA: regionA.bps.ipm ?? 0,
         valB: regionB.bps.ipm ?? 0,
-        fmtA: regionA.bps.ipm !== null ? `${regionA.bps.ipm}` : "N/A",
-        fmtB: regionB.bps.ipm !== null ? `${regionB.bps.ipm}` : "N/A",
+        fmtA: regionA.bps.ipm !== null ? `${regionA.bps.ipm}` : "—",
+        fmtB: regionB.bps.ipm !== null ? `${regionB.bps.ipm}` : "—",
         higherWins: true,
         max: 100,
+        comparable: regionA.bps.ipm !== null && regionB.bps.ipm !== null,
       },
       {
         label: "Tingkat Kemiskinan BPS (Lebih Rendah Lebih Baik)",
@@ -122,23 +156,27 @@ export function AduEfisiensiDaerah({
         fmtA:
           regionA.bps.poverty_rate_pct !== null
             ? `${regionA.bps.poverty_rate_pct}%`
-            : "N/A",
+            : "—",
         fmtB:
           regionB.bps.poverty_rate_pct !== null
             ? `${regionB.bps.poverty_rate_pct}%`
-            : "N/A",
+            : "—",
         higherWins: false,
         max: 36,
+        comparable:
+          regionA.bps.poverty_rate_pct !== null &&
+          regionB.bps.poverty_rate_pct !== null,
       },
     ],
     [regionA, regionB]
   );
 
-  const winsA = comparisons.filter((c) =>
-    c.higherWins ? c.valA > c.valB : c.valA < c.valB
+  const comparableTotal = comparisons.filter((c) => c.comparable).length;
+  const winsA = comparisons.filter(
+    (c) => c.comparable && (c.higherWins ? c.valA > c.valB : c.valA < c.valB)
   ).length;
-  const winsB = comparisons.filter((c) =>
-    c.higherWins ? c.valB > c.valA : c.valB < c.valA
+  const winsB = comparisons.filter(
+    (c) => c.comparable && (c.higherWins ? c.valB > c.valA : c.valB < c.valA)
   ).length;
 
   const overallWinner =
@@ -186,7 +224,7 @@ export function AduEfisiensiDaerah({
     onChange: (v: string) => void,
     accentTone: "emerald" | "amber"
   ) => (
-    <div className="flex-1 min-w-0">
+    <div className="min-w-0 flex-1">
       <label
         htmlFor={id}
         className="mb-1.5 block font-mono text-[11px] font-semibold uppercase tracking-wider text-muted-foreground"
@@ -207,8 +245,8 @@ export function AduEfisiensiDaerah({
 
   return (
     <section id="adu-daerah" className="scroll-mt-20">
-      <Card className="overflow-hidden">
-        <CardHeader className="border-b border-border bg-secondary/40">
+      <Card>
+        <CardHeader className="rounded-t-lg border-b border-border bg-secondary/40">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <div className="flex items-center gap-1.5 font-mono text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -216,14 +254,15 @@ export function AduEfisiensiDaerah({
                   className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-400"
                   aria-hidden="true"
                 />
-                <span>Komparasi Kinerja 1v1 • Data DJPK &amp; BPS</span>
+                <span>Komparasi Kinerja 1v1 • Apple-to-Apple Klaster Fiskal</span>
               </div>
               <CardTitle className="mt-1 text-xl">
                 Adu Efisiensi Daerah
               </CardTitle>
               <CardDescription className="mt-1 text-sm">
                 Bandingkan langsung postur belanja, serapan realisasi, dan
-                capaian sosial BPS antara dua daerah secara objektif.
+                capaian sosial BPS antara dua daerah — atau pasangkan otomatis
+                dengan lawan setara kapasitas fiskal.
               </CardDescription>
             </div>
 
@@ -245,34 +284,116 @@ export function AduEfisiensiDaerah({
           </div>
         </CardHeader>
 
-        <CardContent className="space-y-6 p-5 sm:p-6">
-          {/* Selectors Row */}
-          <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-end">
-            {renderSelect(
-              "duel-region-a",
-              "Daerah A (Emerald)",
-              regionA.id,
-              setRegionAId,
-              "emerald"
-            )}
-            <Button
-              type="button"
-              variant="outline"
-              size="icon"
-              onClick={swapRegions}
-              aria-label="Tukar posisi Daerah A dan Daerah B"
-              className="h-11 w-11 shrink-0 self-center sm:self-end"
-            >
-              <ArrowLeftRight className="h-4 w-4" aria-hidden="true" />
-            </Button>
-            {renderSelect(
-              "duel-region-b",
-              "Daerah B (Amber)",
-              regionB.id,
-              setRegionBId,
-              "amber"
-            )}
+        <CardContent className="space-y-5 p-5 sm:p-6">
+          {/* Selectors Row + One-Click Lawan Setara Klaster */}
+          <div className="space-y-3">
+            <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-end">
+              {renderSelect(
+                "duel-region-a",
+                "Daerah A (Emerald)",
+                regionA.id,
+                setRegionAId,
+                "emerald"
+              )}
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                onClick={swapRegions}
+                aria-label="Tukar posisi Daerah A dan Daerah B"
+                className="h-11 w-11 shrink-0 self-center sm:self-end"
+              >
+                <ArrowLeftRight className="h-4 w-4" aria-hidden="true" />
+              </Button>
+              {renderSelect(
+                "duel-region-b",
+                "Daerah B (Amber)",
+                regionB.id,
+                setRegionBId,
+                "amber"
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-secondary/35 px-3 py-2">
+              <p className="font-mono text-[11px] text-muted-foreground">
+                Pasangkan{" "}
+                <strong className="text-foreground">{regionA.name}</strong>{" "}
+                dengan pembanding setara ({peerLabelA} • Klaster Fiskal{" "}
+                <strong className="text-foreground">
+                  {regionA.fiscal_cluster}
+                </strong>
+                ):
+              </p>
+              <Button
+                type="button"
+                variant="default"
+                size="sm"
+                onClick={handleMatchClusterPeer}
+                className="h-9 shrink-0 whitespace-nowrap font-mono text-xs"
+              >
+                <Equal className="h-3.5 w-3.5" aria-hidden="true" />
+                Lawan Setara Klaster
+              </Button>
+            </div>
           </div>
+
+          {/* Objective Methodological Note for Cross-Cluster / Cross-Level Comparisons */}
+          {regionA.id !== regionB.id &&
+            (!isAppleToApple ? (
+              <div
+                role="note"
+                className="flex flex-col gap-2.5 rounded-md border border-amber-500/35 bg-amber-500/[0.06] p-3.5 text-xs sm:flex-row sm:items-start sm:justify-between"
+              >
+                <div className="flex items-start gap-2.5">
+                  <Info
+                    className="mt-0.5 h-4 w-4 shrink-0 text-amber-700 dark:text-amber-400"
+                    aria-hidden="true"
+                  />
+                  <div className="space-y-1 leading-relaxed text-muted-foreground">
+                    <p className="font-mono text-[11px] font-semibold uppercase tracking-wider text-foreground">
+                      Catatan Metodologi — Perbedaan Kapasitas Fiskal
+                    </p>
+                    <p>
+                      Anda sedang membandingkan{" "}
+                      <strong className="text-foreground">{regionA.name}</strong>{" "}
+                      ({peerLabelA} • Klaster{" "}
+                      <strong className="text-foreground">
+                        {regionA.fiscal_cluster}
+                      </strong>
+                      ) dengan{" "}
+                      <strong className="text-foreground">{regionB.name}</strong>{" "}
+                      ({peerLabelB} • Klaster{" "}
+                      <strong className="text-foreground">
+                        {regionB.fiscal_cluster}
+                      </strong>
+                      ).{" "}
+                      {!isSameLevel
+                        ? "APBD Provinsi dan Kabupaten/Kota memiliki struktur kewenangan serta skala fiskal yang berbeda. "
+                        : "Perbedaan skala APBD dan basis kemandirian PAD memengaruhi ruang belanja modal serta daya dorong layanan publik. "}
+                      Gunakan tombol <em>Lawan Setara Klaster</em> untuk evaluasi
+                      apple-to-apple yang lebih adil.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 rounded-md border border-emerald-600/30 bg-emerald-500/[0.06] px-3.5 py-2.5 text-xs text-muted-foreground">
+                <CheckCircle2
+                  className="h-4 w-4 shrink-0 text-emerald-700 dark:text-emerald-400"
+                  aria-hidden="true"
+                />
+                <span>
+                  <strong className="text-foreground">
+                    Mode Apple-to-Apple:
+                  </strong>{" "}
+                  Kedua daerah berada pada strata dan kapasitas fiskal setara (
+                  <strong className="font-mono text-foreground">
+                    {peerLabelA} • Klaster Fiskal {regionA.fiscal_cluster}
+                  </strong>
+                  ).
+                </span>
+              </div>
+            ))}
 
           {/* Tale of the Tape Cards (distinct sideKey avoids duplicate React keys when A===B) */}
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -296,43 +417,70 @@ export function AduEfisiensiDaerah({
             ].map(({ sideKey, reg, wins, accent, dot, winText }) => {
               const isWinner = overallWinner?.id === reg.id;
               const gs = getGradeStyles(reg.hkpd.grade);
+              const cs = getFiscalClusterStyles(reg.fiscal_cluster);
+              const pLabel = getEntityPeerGroupLabel(reg.level);
               return (
                 <div
                   key={sideKey}
-                  className={cn("space-y-2 rounded-lg border p-4", accent)}
+                  className={cn("space-y-2.5 rounded-lg border p-4", accent)}
                 >
                   <div className="flex items-start justify-between gap-2">
-                    <div className="flex items-center gap-2">
+                    <div className="flex min-w-0 items-center gap-2">
                       <span className={cn("h-3 w-3 shrink-0 rounded-sm", dot)} />
-                      <div>
+                      <div className="min-w-0">
                         <h3 className="flex items-center gap-1.5 font-sans text-base font-bold text-foreground">
-                          {reg.name}
+                          <span className="truncate">{reg.name}</span>
                           {isWinner && (
                             <Trophy
-                              className="h-4 w-4 text-amber-600 dark:text-amber-400"
+                              className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400"
                               aria-label="Unggul Efektivitas"
                             />
                           )}
                         </h3>
-                        <p className="text-xs text-muted-foreground">
+                        <p className="truncate text-xs text-muted-foreground">
                           {reg.level !== "provinsi"
                             ? `${reg.province_name} • ${reg.effectiveness.archetype}`
                             : reg.effectiveness.archetype}
                         </p>
                       </div>
                     </div>
-                    <Badge variant={reg.hkpd.grade} className="font-mono text-xs">
+                    <Badge
+                      variant={reg.hkpd.grade}
+                      className="shrink-0 font-mono text-xs"
+                    >
                       {gs.label}
                     </Badge>
                   </div>
 
-                  <div className="grid grid-cols-3 gap-2 pt-2 font-mono text-xs tabular-nums">
+                  {/* Klaster Kapasitas Fiskal Pill Row */}
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span
+                      className={cn(
+                        "inline-flex items-center gap-1.5 whitespace-nowrap rounded border px-2 py-0.5 font-mono text-[10px] font-semibold",
+                        cs.badgeClass
+                      )}
+                    >
+                      <span
+                        className={cn("h-1.5 w-1.5 rounded-full", cs.dotClass)}
+                        aria-hidden="true"
+                      />
+                      Klaster Fiskal {cs.shortLabel}
+                    </span>
+                    <span className="font-mono text-[10px] text-muted-foreground tabular-nums">
+                      Peringkat #{reg.fiscal_cluster_rank}/
+                      {reg.fiscal_cluster_total} {pLabel} Setara
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2 pt-1 font-mono text-xs tabular-nums">
                     <div className="rounded border border-border bg-card p-2">
                       <span className="block text-[10px] text-muted-foreground">
                         APBD TA {reg.fiscal_year}
                       </span>
                       <strong className="text-foreground">
-                        {formatMiliarToTriliun(reg.expenditure.total_belanja_miliar)}
+                        {formatMiliarToTriliun(
+                          reg.expenditure.total_belanja_miliar
+                        )}
                       </strong>
                     </div>
                     <div className="rounded border border-border bg-card p-2">
@@ -347,7 +495,9 @@ export function AduEfisiensiDaerah({
                       <span className="block text-[10px] text-muted-foreground">
                         UNGGUL
                       </span>
-                      <strong className={winText}>{wins} / 7</strong>
+                      <strong className={winText}>
+                        {wins} / {comparableTotal}
+                      </strong>
                     </div>
                   </div>
                 </div>
@@ -359,10 +509,16 @@ export function AduEfisiensiDaerah({
           <div className="grid gap-6 lg:grid-cols-12">
             <div className="space-y-3 lg:col-span-7">
               {comparisons.map((c) => {
-                const aWins = c.higherWins ? c.valA > c.valB : c.valA < c.valB;
-                const bWins = c.higherWins ? c.valB > c.valA : c.valB < c.valA;
-                const pctA = Math.min(100, (c.valA / c.max) * 100);
-                const pctB = Math.min(100, (c.valB / c.max) * 100);
+                const aWins =
+                  c.comparable &&
+                  (c.higherWins ? c.valA > c.valB : c.valA < c.valB);
+                const bWins =
+                  c.comparable &&
+                  (c.higherWins ? c.valB > c.valA : c.valB < c.valA);
+                const pctA =
+                  c.fmtA === "—" ? 0 : Math.min(100, (c.valA / c.max) * 100);
+                const pctB =
+                  c.fmtB === "—" ? 0 : Math.min(100, (c.valB / c.max) * 100);
 
                 return (
                   <div
@@ -372,7 +528,7 @@ export function AduEfisiensiDaerah({
                     <div className="mb-2 flex items-center justify-between gap-2 text-xs">
                       <span
                         className={cn(
-                          "font-mono tabular-nums",
+                          "shrink-0 font-mono tabular-nums",
                           aWins
                             ? "font-bold text-emerald-700 dark:text-emerald-400"
                             : "text-muted-foreground"
@@ -385,7 +541,7 @@ export function AduEfisiensiDaerah({
                       </span>
                       <span
                         className={cn(
-                          "font-mono tabular-nums",
+                          "shrink-0 font-mono tabular-nums",
                           bWins
                             ? "font-bold text-amber-700 dark:text-amber-400"
                             : "text-muted-foreground"
@@ -481,7 +637,10 @@ export function AduEfisiensiDaerah({
               {/* Verdict Banner */}
               <div className="mt-4 rounded-md border border-border bg-secondary/40 p-3 text-xs">
                 <div className="flex items-center gap-1.5 font-mono text-[11px] font-bold uppercase tracking-wider text-foreground">
-                  <Scale className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-400" aria-hidden="true" />
+                  <Scale
+                    className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-400"
+                    aria-hidden="true"
+                  />
                   <span>Kesimpulan Komparasi</span>
                 </div>
                 <p className="mt-1.5 leading-relaxed text-muted-foreground">
@@ -490,7 +649,8 @@ export function AduEfisiensiDaerah({
                       <strong className="text-foreground">
                         {overallWinner.name}
                       </strong>{" "}
-                      mencatat Indeks Efektivitas lebih tinggi (
+                      (Klaster {overallWinner.fiscal_cluster}) mencatat Indeks
+                      Efektivitas lebih tinggi (
                       <strong className="font-mono text-foreground tabular-nums">
                         {overallWinner.effectiveness.effectiveness_score}/100
                       </strong>
@@ -500,7 +660,9 @@ export function AduEfisiensiDaerah({
                       </span>{" "}
                       dan IPM{" "}
                       <span className="font-mono tabular-nums">
-                        {overallWinner.bps.ipm ?? "N/A"}
+                        {overallWinner.bps.ipm !== null
+                          ? overallWinner.bps.ipm
+                          : "—"}
                       </span>
                       .
                     </>

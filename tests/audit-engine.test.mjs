@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 
 const root = process.cwd();
@@ -128,5 +128,104 @@ test("verified audit summaries are non-empty and never mention fabricated server
     assert.ok(r.ai_audit.fiscal_finding.length > 40);
     assert.ok(r.ai_audit.social_correlation.length > 40);
     assert.ok(r.ai_audit.policy_recommendation.length > 40);
+    assert.ok(
+      !r.ai_audit.fiscal_finding.includes("TA 2025"),
+      `Stale TA 2025 reference in fiscal_finding for ${r.id}`
+    );
+  }
+});
+
+test("every region has stratified Apple-to-Apple fiscal capacity cluster, peer rank, and balanced tertile summary", () => {
+  const validClusters = new Set(["Tinggi", "Sedang", "Rendah"]);
+  assert.ok(summary.fiscal_cluster_distribution, "Missing summary.fiscal_cluster_distribution");
+  assert.ok(
+    summary.provinsi_aggregates?.fiscal_cluster_distribution,
+    "Missing provinsi_aggregates.fiscal_cluster_distribution"
+  );
+  assert.ok(
+    summary.kab_kota_aggregates?.fiscal_cluster_distribution,
+    "Missing kab_kota_aggregates.fiscal_cluster_distribution"
+  );
+
+  const buckets = new Map();
+  for (const r of regions) {
+    assert.ok(
+      validClusters.has(r.fiscal_cluster),
+      `Invalid fiscal_cluster '${r.fiscal_cluster}' for ${r.id}`
+    );
+    assert.ok(
+      Number.isInteger(r.fiscal_cluster_rank) && r.fiscal_cluster_rank >= 1,
+      `Invalid fiscal_cluster_rank for ${r.id}`
+    );
+    assert.ok(
+      Number.isInteger(r.fiscal_cluster_total) && r.fiscal_cluster_rank <= r.fiscal_cluster_total,
+      `Invalid fiscal_cluster_total for ${r.id}`
+    );
+    const groupKey = `${r.level === "provinsi" ? "provinsi" : "kab_kota"}:${r.fiscal_cluster}`;
+    if (!buckets.has(groupKey)) buckets.set(groupKey, []);
+    buckets.get(groupKey).push(r);
+  }
+
+  for (const group of ["provinsi", "kab_kota"]) {
+    const counts = ["Tinggi", "Sedang", "Rendah"].map(
+      (tier) => (buckets.get(`${group}:${tier}`) ?? []).length
+    );
+    assert.ok(
+      Math.max(...counts) - Math.min(...counts) <= 1,
+      `Unbalanced ${group} tertiles: ${counts.join("/")}`
+    );
+    for (const tier of ["Tinggi", "Sedang", "Rendah"]) {
+      const items = buckets.get(`${group}:${tier}`) ?? [];
+      const ranks = items.map((i) => i.fiscal_cluster_rank).sort((a, b) => a - b);
+      assert.deepEqual(
+        ranks,
+        Array.from({ length: items.length }, (_, idx) => idx + 1),
+        `Non-contiguous peer ranks in ${group}:${tier}`
+      );
+      for (const item of items) {
+        assert.equal(item.fiscal_cluster_total, items.length);
+      }
+    }
+  }
+
+  const distTotal =
+    summary.fiscal_cluster_distribution.Tinggi +
+    summary.fiscal_cluster_distribution.Sedang +
+    summary.fiscal_cluster_distribution.Rendah;
+  assert.equal(distTotal, regions.length);
+});
+
+test("zero hardcoded 2025 fiscal year strings remain anywhere in src/", () => {
+  const srcDir = path.join(root, "src");
+  const hits = [];
+  function walk(dir) {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (/\.(ts|tsx|js|jsx|css)$/.test(entry.name)) {
+        const text = readFileSync(full, "utf-8");
+        if (text.includes("2025")) {
+          hits.push(path.relative(root, full));
+        }
+      }
+    }
+  }
+  walk(srcDir);
+  assert.deepEqual(hits, [], `Found hardcoded '2025' in src/: ${hits.join(", ")}`);
+});
+
+test("every region has at least one valid Apple-to-Apple peer in the same stratum and fiscal cluster", () => {
+  for (const r of regions) {
+    const isProv = r.level === "provinsi";
+    const peers = regions.filter(
+      (cand) =>
+        cand.id !== r.id &&
+        (cand.level === "provinsi") === isProv &&
+        cand.fiscal_cluster === r.fiscal_cluster
+    );
+    assert.ok(
+      peers.length >= 1,
+      `No Apple-to-Apple peer available for ${r.id} (${r.level}, ${r.fiscal_cluster})`
+    );
   }
 });

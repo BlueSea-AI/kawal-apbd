@@ -29,6 +29,7 @@ type ChartScope = "provinsi" | "semua";
 interface BpsCorrelationChartProps {
   regions: RegionRecord[];
   selectedRegionId: string;
+  fiscalYear?: number;
   onSelectRegion: (id: string) => void;
 }
 
@@ -49,6 +50,7 @@ interface ScatterPoint {
 export function BpsCorrelationChart({
   regions,
   selectedRegionId,
+  fiscalYear,
   onSelectRegion,
 }: BpsCorrelationChartProps) {
   // Client mount guard prevents Recharts ResponsiveContainer SSR width(-1) dev warnings
@@ -58,6 +60,8 @@ export function BpsCorrelationChart({
   React.useEffect(() => {
     setMounted(true);
   }, []);
+
+  const activeFiscalYear = fiscalYear ?? regions[0]?.fiscal_year ?? 2026;
 
   const scopedRegions = React.useMemo(() => {
     // If user already filtered down to <= 80 regions (e.g., via search/filter bar), show all filtered directly
@@ -80,7 +84,10 @@ export function BpsCorrelationChart({
         provinceName: r.province_name,
         x: r.hkpd.score,
         y: r.effectiveness.social_outcome_score,
-        z: Math.max(30, Math.sqrt(r.expenditure.total_belanja_miliar) * 2.8),
+        z: Math.max(
+          30,
+          Math.sqrt(Math.max(0, r.expenditure.total_belanja_miliar || 0)) * 2.8
+        ),
         grade: r.hkpd.grade,
         archetype: r.effectiveness.archetype,
         apbdMiliar: r.expenditure.total_belanja_miliar,
@@ -207,9 +214,9 @@ export function BpsCorrelationChart({
                         <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-[11px] text-muted-foreground tabular-nums">
                           <span>Audit Fiskal: {pt.x}</span>
                           <span>Sosial BPS: {pt.y}</span>
-                          <span>IPM: {pt.ipm ?? "N/A"}</span>
+                          <span>IPM: {pt.ipm !== null ? pt.ipm : "—"}</span>
                           <span>
-                            Miskin: {pt.poverty !== null ? `${pt.poverty}%` : "N/A"}
+                            Miskin: {pt.poverty !== null ? `${pt.poverty}%` : "—"}
                           </span>
                         </div>
                         <p className="mt-1.5 font-mono text-[11px] font-semibold text-foreground tabular-nums">
@@ -268,7 +275,9 @@ export function BpsCorrelationChart({
               Merah
             </span>
           </div>
-          <span className="font-mono">Ukuran gelembung = Total APBD TA 2025</span>
+          <span className="font-mono">
+            Ukuran gelembung = Total APBD TA {activeFiscalYear}
+          </span>
         </div>
       </CardContent>
     </Card>

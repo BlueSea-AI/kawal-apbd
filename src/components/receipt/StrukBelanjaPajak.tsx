@@ -125,8 +125,8 @@ export function StrukBelanjaPajak({
 
   return (
     <section id="struk-pajak" className="scroll-mt-20">
-      <Card className="overflow-hidden">
-        <CardHeader className="border-b border-border bg-secondary/40">
+      <Card>
+        <CardHeader className="rounded-t-lg border-b border-border bg-secondary/40">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <div className="flex items-center gap-1.5 font-mono text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">

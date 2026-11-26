@@ -2,7 +2,7 @@
   "fiscal_year": 2026,
   "djpk_periode": 12,
   "bps_year": 2026,
-  "generated_at": "2026-11-26T08:07:46+00:00",
+  "generated_at": "2026-11-26T15:02:22+00:00",
   "is_verified_real_data": true,
   "coverage_scope": "Nasional Penuh (38 Provinsi + Seluruh Kab/Kota Otonom DJPK)",
   "data_sources": [
@@ -40,6 +40,11 @@
     "kuning": 58,
     "merah": 487
   },
+  "fiscal_cluster_distribution": {
+    "Tinggi": 182,
+    "Sedang": 183,
+    "Rendah": 181
+  },
   "provinsi_aggregates": {
     "count": 38,
     "total_apbd_triliun": 368.03,
@@ -53,6 +58,11 @@
       "hijau": 1,
       "kuning": 9,
       "merah": 28
+    },
+    "fiscal_cluster_distribution": {
+      "Tinggi": 13,
+      "Sedang": 13,
+      "Rendah": 12
     }
   },
   "kab_kota_aggregates": {
@@ -70,7 +80,12 @@
       "merah": 459
     },
     "kabupaten_count": 415,
-    "kota_count": 93
+    "kota_count": 93,
+    "fiscal_cluster_distribution": {
+      "Tinggi": 169,
+      "Sedang": 170,
+      "Rendah": 169
+    }
   },
   "top_efficient_ids": [
     "kota-3578",

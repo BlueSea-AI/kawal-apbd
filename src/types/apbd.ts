@@ -10,6 +10,8 @@ export type IslandCluster =
 
 export type HkpdGrade = "hijau" | "kuning" | "merah";
 
+export type FiscalCluster = "Tinggi" | "Sedang" | "Rendah";
+
 export type FiscalProfileLabel =
   | "Disiplin Fiskal & Dampak Tinggi"
   | "Mandiri Fiskal & Progresif"
@@ -95,6 +97,7 @@ export interface EffectivenessIndex {
 
 export interface DataProvenance {
   fiscal_year: number;
+  bps_year?: number;
   djpk_periode: string;
   djpk_source_url: string;
   bps_source_url: string;
@@ -127,6 +130,10 @@ export interface RegionRecord {
   level: RegionLevel;
   island: IslandCluster;
   fiscal_year: number;
+  fiscal_cluster: FiscalCluster;
+  fiscal_cluster_rank: number;
+  fiscal_cluster_total: number;
+  fiscal_capacity_index?: number;
   centroid: [number, number];
   revenue: BudgetRevenue;
   expenditure: BudgetExpenditure;
@@ -153,10 +160,12 @@ export interface TierAggregateSummary {
     kuning: number;
     merah: number;
   };
+  fiscal_cluster_distribution?: Record<FiscalCluster, number>;
 }
 
 export interface NationalSummary {
   fiscal_year: number;
+  djpk_periode?: number;
   bps_year: number;
   generated_at: string;
   is_verified_real_data: boolean;
@@ -191,6 +200,7 @@ export interface NationalSummary {
     kuning: number;
     merah: number;
   };
+  fiscal_cluster_distribution?: Record<FiscalCluster, number>;
   provinsi_aggregates?: TierAggregateSummary;
   kab_kota_aggregates?: TierAggregateSummary;
   top_efficient_ids: string[];

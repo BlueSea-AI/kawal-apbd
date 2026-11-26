@@ -313,5 +313,129 @@ class TestBrowserHeadersAndGracefulCacheFallback(unittest.TestCase):
             self.assertIn("[WARN]", buf.getvalue())
 
 
+class TestFiscalCapacityClustering(unittest.TestCase):
+    @staticmethod
+    def _make_region(
+        rid: str,
+        name: str,
+        level: str,
+        pad_ratio: float,
+        apbd_miliar: float,
+        eff_score: float,
+        hkpd_score: float = 50.0,
+    ) -> dict:
+        return {
+            "id": rid,
+            "name": name,
+            "level": level,
+            "revenue": {"pad_ratio_pct": pad_ratio},
+            "expenditure": {"total_belanja_miliar": apbd_miliar},
+            "hkpd": {"score": hkpd_score},
+            "effectiveness": {"effectiveness_score": eff_score},
+        }
+
+    def test_stratifies_provinces_separately_from_kab_kota_without_cross_level_contamination(self):
+        # Mega kabupaten has LARGER APBD & higher PAD than small provinces,
+        # yet each administrative level must be clustered & ranked strictly within its own group.
+        regions = [
+            # 3 Provinces: small (1000 M), medium (5000 M), large (50000 M)
+            self._make_region("prov-01", "Prov Kecil", "provinsi", 12.0, 1000.0, 80.0),
+            self._make_region("prov-02", "Prov Sedang", "provinsi", 35.0, 5000.0, 60.0),
+            self._make_region("prov-03", "Prov Besar", "provinsi", 70.0, 50000.0, 75.0),
+            # 3 Kab/Kota: small (600 M), medium (2500 M), mega-city (12000 M > Prov Sedang)
+            self._make_region("kab-01", "Kab Kecil", "kabupaten", 5.0, 600.0, 70.0),
+            self._make_region("kab-02", "Kab Sedang", "kabupaten", 20.0, 2500.0, 65.0),
+            self._make_region("kota-03", "Kota Mega", "kota", 65.0, 12000.0, 85.0),
+        ]
+
+        dist = etl.assign_fiscal_capacity_clusters(regions)
+        by_id = {r["id"]: r for r in regions}
+
+        self.assertEqual(by_id["prov-03"]["fiscal_cluster"], "Tinggi")
+        self.assertEqual(by_id["prov-02"]["fiscal_cluster"], "Sedang")
+        self.assertEqual(by_id["prov-01"]["fiscal_cluster"], "Rendah")
+        self.assertEqual(by_id["prov-01"]["fiscal_cluster_total"], 1)
+        self.assertEqual(by_id["prov-01"]["fiscal_cluster_rank"], 1)
+
+        self.assertEqual(by_id["kota-03"]["fiscal_cluster"], "Tinggi")
+        self.assertEqual(by_id["kab-02"]["fiscal_cluster"], "Sedang")
+        self.assertEqual(by_id["kab-01"]["fiscal_cluster"], "Rendah")
+        self.assertEqual(by_id["kota-03"]["fiscal_cluster_total"], 1)
+
+        self.assertEqual(dist["overall"], {"Tinggi": 2, "Sedang": 2, "Rendah": 2})
+        self.assertEqual(dist["provinsi"], {"Tinggi": 1, "Sedang": 1, "Rendah": 1})
+        self.assertEqual(dist["kab_kota"], {"Tinggi": 1, "Sedang": 1, "Rendah": 1})
+
+    def test_assigns_balanced_tertiles_and_deterministic_peer_ranks(self):
+        # Mirror exact national counts: 38 provinces + 508 kab/kota
+        regions = []
+        for i in range(38):
+            regions.append(
+                self._make_region(
+                    f"prov-{i:02d}",
+                    f"Provinsi {i:02d}",
+                    "provinsi",
+                    pad_ratio=10.0 + i * 1.8,
+                    apbd_miliar=1500.0 + i * 2200.0,
+                    eff_score=40.0 + (37 - i) * 1.1,
+                    hkpd_score=35.0 + (i % 10) * 4.0,
+                )
+            )
+        for i in range(508):
+            regions.append(
+                self._make_region(
+                    f"kab-{i:04d}",
+                    f"Kabupaten {i:04d}",
+                    "kota" if i % 5 == 0 else "kabupaten",
+                    pad_ratio=4.0 + (i % 65),
+                    apbd_miliar=500.0 + i * 25.0,
+                    eff_score=30.0 + (i % 50),
+                    hkpd_score=25.0 + (i % 40),
+                )
+            )
+
+        dist = etl.assign_fiscal_capacity_clusters(regions)
+
+        # Balanced tertiles (max count - min count <= 1) in both strata
+        self.assertEqual(sum(dist["provinsi"].values()), 38)
+        self.assertLessEqual(max(dist["provinsi"].values()) - min(dist["provinsi"].values()), 1)
+        self.assertEqual(sum(dist["kab_kota"].values()), 508)
+        self.assertLessEqual(max(dist["kab_kota"].values()) - min(dist["kab_kota"].values()), 1)
+        self.assertEqual(sum(dist["overall"].values()), 546)
+
+        # Contiguous 1-based peer ranks sorted by effectiveness_score desc within each bucket
+        for group_is_prov in (True, False):
+            for tier in ("Tinggi", "Sedang", "Rendah"):
+                bucket = [
+                    r
+                    for r in regions
+                    if (r["level"] == "provinsi") == group_is_prov and r["fiscal_cluster"] == tier
+                ]
+                ranks = sorted(r["fiscal_cluster_rank"] for r in bucket)
+                self.assertEqual(ranks, list(range(1, len(bucket) + 1)))
+                for r in bucket:
+                    self.assertEqual(r["fiscal_cluster_total"], len(bucket))
+                    self.assertTrue(0.0 <= r["fiscal_capacity_index"] <= 100.0)
+                by_rank = sorted(bucket, key=lambda r: r["fiscal_cluster_rank"])
+                for prev, nxt in zip(by_rank, by_rank[1:]):
+                    self.assertGreaterEqual(
+                        (prev["effectiveness"]["effectiveness_score"], prev["hkpd"]["score"]),
+                        (nxt["effectiveness"]["effectiveness_score"], nxt["hkpd"]["score"]),
+                    )
+
+    def test_handles_uniform_and_tiny_groups_without_division_by_zero(self):
+        regions = [
+            self._make_region("prov-1", "Prov Satu", "provinsi", 20.0, 2000.0, 55.0),
+            self._make_region("kab-1", "Kab A", "kabupaten", 15.0, 1000.0, 60.0),
+            self._make_region("kab-2", "Kab B", "kabupaten", 15.0, 1000.0, 50.0),
+        ]
+        dist = etl.assign_fiscal_capacity_clusters(regions)
+        self.assertEqual(sum(dist["overall"].values()), 3)
+        for r in regions:
+            self.assertIn(r["fiscal_cluster"], ("Tinggi", "Sedang", "Rendah"))
+            self.assertGreaterEqual(r["fiscal_cluster_rank"], 1)
+            self.assertLessEqual(r["fiscal_cluster_rank"], r["fiscal_cluster_total"])
+
+
 if __name__ == "__main__":
     unittest.main()

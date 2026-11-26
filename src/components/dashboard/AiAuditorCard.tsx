@@ -105,7 +105,7 @@ export function AiAuditorCard({ region }: AiAuditorCardProps) {
                 IPM ({bps.year})
               </p>
               <p className="font-mono text-sm font-bold text-foreground tabular-nums">
-                {bps.ipm !== null ? bps.ipm : "N/A"}
+                {bps.ipm !== null ? bps.ipm : "—"}
               </p>
             </div>
             <div className="border-x border-border">
@@ -113,23 +113,28 @@ export function AiAuditorCard({ region }: AiAuditorCardProps) {
                 Kemiskinan
               </p>
               <p className="font-mono text-sm font-bold text-foreground tabular-nums">
-                {bps.poverty_rate_pct !== null ? `${bps.poverty_rate_pct}%` : "N/A"}
+                {bps.poverty_rate_pct !== null ? `${bps.poverty_rate_pct}%` : "—"}
               </p>
             </div>
-            <div>
+            <div className="min-w-0">
               <p className="font-mono text-[10px] uppercase text-muted-foreground">
                 TPT BPS
               </p>
-              <p
-                className="font-mono text-sm font-bold text-foreground tabular-nums"
-                title={
-                  bps.tpt_pct === null
-                    ? "Data TPT Kab/Kota belum dipublikasikan pada tabel provinsi BPS"
-                    : undefined
-                }
-              >
-                {bps.tpt_pct !== null ? `${bps.tpt_pct}%` : "Belum Rilis"}
-              </p>
+              {bps.tpt_pct !== null ? (
+                <p className="font-mono text-sm font-bold text-foreground tabular-nums">
+                  {bps.tpt_pct}%
+                </p>
+              ) : (
+                <p
+                  className="font-mono text-sm font-bold leading-tight text-muted-foreground"
+                  title="Data TPT Kab/Kota belum dipublikasikan pada tabel provinsi BPS"
+                >
+                  —
+                  <span className="mt-0.5 block truncate font-sans text-[9px] font-medium text-muted-foreground">
+                    Belum Dipublikasikan
+                  </span>
+                </p>
+              )}
             </div>
           </div>
 

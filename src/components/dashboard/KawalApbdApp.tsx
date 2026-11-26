@@ -131,6 +131,7 @@ export function KawalApbdApp({ regions, summary }: KawalApbdAppProps) {
               <SpatialMap3D
                 regions={regions}
                 selectedRegion={selectedRegion}
+                fiscalYear={summary.fiscal_year}
                 onSelectRegion={setSelectedRegionId}
               />
             </div>
@@ -154,6 +155,7 @@ export function KawalApbdApp({ regions, summary }: KawalApbdAppProps) {
             <BpsCorrelationChart
               regions={filteredRegions.length > 0 ? filteredRegions : regions}
               selectedRegionId={selectedRegion.id}
+              fiscalYear={summary.fiscal_year}
               onSelectRegion={setSelectedRegionId}
             />
           </section>
@@ -175,6 +177,7 @@ export function KawalApbdApp({ regions, summary }: KawalApbdAppProps) {
             <RegionLeaderboardTable
               regions={filteredRegions}
               allRegions={regions}
+              fiscalYear={summary.fiscal_year}
               selectedRegionId={selectedRegion.id}
               onSelectRegion={(id) => {
                 setSelectedRegionId(id);

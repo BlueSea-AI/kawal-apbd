@@ -1486,6 +1486,97 @@ def summarize_tier(items: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+FISCAL_CLUSTER_TIERS: tuple[str, str, str] = ("Tinggi", "Sedang", "Rendah")
+
+
+def _assign_stratum_clusters(group: list[dict[str, Any]]) -> dict[str, int]:
+    """
+    Computes deterministic Fiscal Capacity Index within a single administrative stratum
+    (Provinsi OR Kab/Kota) from authentic DJPK PAD ratio (55%) + log10 APBD scale (45%),
+    splits into 3 balanced quantile tertiles (Tinggi / Sedang / Rendah), and ranks each
+    Pemda within its exact peer bucket by effectiveness & HKPD audit score.
+    """
+    counts = {"Tinggi": 0, "Sedang": 0, "Rendah": 0}
+    if not group:
+        return counts
+
+    pad_vals = [float(r["revenue"]["pad_ratio_pct"]) for r in group]
+    log_vals = [math.log10(max(1.0, float(r["expenditure"]["total_belanja_miliar"]))) for r in group]
+    min_pad, max_pad = min(pad_vals), max(pad_vals)
+    min_log, max_log = min(log_vals), max(log_vals)
+
+    for r, pad_v, log_v in zip(group, pad_vals, log_vals):
+        norm_pad = ((pad_v - min_pad) / (max_pad - min_pad) * 100.0) if max_pad > min_pad else 50.0
+        norm_log = ((log_v - min_log) / (max_log - min_log) * 100.0) if max_log > min_log else 50.0
+        r["fiscal_capacity_index"] = round1(clamp(0.55 * norm_pad + 0.45 * norm_log, 0.0, 100.0))
+
+    ordered = sorted(
+        group,
+        key=lambda x: (
+            -x["fiscal_capacity_index"],
+            -float(x["revenue"]["pad_ratio_pct"]),
+            -float(x["expenditure"]["total_belanja_miliar"]),
+            x["name"],
+        ),
+    )
+
+    n = len(ordered)
+    if n == 1:
+        tier_labels = ["Sedang"]
+    elif n == 2:
+        tier_labels = ["Tinggi", "Rendah"]
+    else:
+        base, rem = divmod(n, 3)
+        n_tinggi = base + (1 if rem == 2 else 0)
+        n_sedang = base + (1 if rem >= 1 else 0)
+        n_rendah = base
+        tier_labels = (["Tinggi"] * n_tinggi) + (["Sedang"] * n_sedang) + (["Rendah"] * n_rendah)
+
+    for r, tier in zip(ordered, tier_labels):
+        r["fiscal_cluster"] = tier
+        counts[tier] += 1
+
+    # Assign 1-based performance rank within each peer bucket
+    for tier in FISCAL_CLUSTER_TIERS:
+        bucket = [r for r in ordered if r["fiscal_cluster"] == tier]
+        bucket.sort(
+            key=lambda x: (
+                -float(x["effectiveness"]["effectiveness_score"]),
+                -float(x["hkpd"]["score"]),
+                x["name"],
+            )
+        )
+        total = len(bucket)
+        for rank_idx, r in enumerate(bucket, start=1):
+            r["fiscal_cluster_rank"] = rank_idx
+            r["fiscal_cluster_total"] = total
+
+    return counts
+
+
+def assign_fiscal_capacity_clusters(
+    regions: list[dict[str, Any]],
+) -> dict[str, dict[str, int]]:
+    """
+    Stratifies Provinsi separately from autonomous Kabupaten/Kota and assigns
+    Apple-to-Apple Fiscal Capacity Clusters (`Tinggi` / `Sedang` / `Rendah`),
+    peer rank (`fiscal_cluster_rank`), and peer group size (`fiscal_cluster_total`).
+    """
+    provinces = [r for r in regions if r["level"] == "provinsi"]
+    kab_kota = [r for r in regions if r["level"] != "provinsi"]
+
+    prov_dist = _assign_stratum_clusters(provinces)
+    kab_dist = _assign_stratum_clusters(kab_kota)
+    overall_dist = {
+        tier: prov_dist[tier] + kab_dist[tier] for tier in FISCAL_CLUSTER_TIERS
+    }
+    return {
+        "overall": overall_dist,
+        "provinsi": prov_dist,
+        "kab_kota": kab_dist,
+    }
+
+
 # ---------------------------------------------------------------------------
 # 7. Master Full-National Build Pipeline
 # ---------------------------------------------------------------------------
@@ -1867,6 +1958,11 @@ def build_datasets(
     )
     for idx, r in enumerate(ranked, start=1):
         r["effectiveness"]["rank_national"] = idx
+
+    # Stratify Provinsi vs Kab/Kota and assign Apple-to-Apple Fiscal Capacity Clusters
+    cluster_dist = assign_fiscal_capacity_clusters(ranked)
+
+    for r in ranked:
         r["ai_audit"] = build_verified_audit_summary(r)
 
     regions = sorted(
@@ -1880,9 +1976,11 @@ def build_datasets(
     kota_list = [r for r in kab_kota if r["level"] == "kota"]
 
     prov_agg = summarize_tier(provinces)
+    prov_agg["fiscal_cluster_distribution"] = cluster_dist["provinsi"]
     kab_kota_agg = summarize_tier(kab_kota)
     kab_kota_agg["kabupaten_count"] = len(kabupaten_list)
     kab_kota_agg["kota_count"] = len(kota_list)
+    kab_kota_agg["fiscal_cluster_distribution"] = cluster_dist["kab_kota"]
 
     grade_dist = {"hijau": 0, "kuning": 0, "merah": 0}
     for r in regions:
@@ -1965,6 +2063,7 @@ def build_datasets(
         ),
         "avg_tpt_pct": round2(nat_tpt) if nat_tpt is not None else round2(statistics.mean(valid_tpt)),
         "grade_distribution": grade_dist,
+        "fiscal_cluster_distribution": cluster_dist["overall"],
         "provinsi_aggregates": prov_agg,
         "kab_kota_aggregates": kab_kota_agg,
         "top_efficient_ids": [r["id"] for r in ranked[:5]],
@@ -1992,6 +2091,10 @@ def build_datasets(
                     "bps_code": code,
                     "name": p["name"],
                     "island": p["island"],
+                    "fiscal_year": p["fiscal_year"],
+                    "fiscal_cluster": p["fiscal_cluster"],
+                    "fiscal_cluster_rank": p["fiscal_cluster_rank"],
+                    "fiscal_cluster_total": p["fiscal_cluster_total"],
                     "kab_kota_count": kab_count_by_prov.get(p["id"], 0),
                     "total_apbd_miliar": p["expenditure"]["total_belanja_miliar"],
                     "total_apbd_triliun": total_t,
@@ -2092,6 +2195,33 @@ def verify_outputs(
             assert r["bps"]["tpt_pct"] is not None, f"Missing BPS TPT for province {r['id']}"
         for k in ("fiscal_finding", "social_correlation", "policy_recommendation"):
             assert len(r["ai_audit"][k]) > 40, f"Audit narrative '{k}' too short for {r['id']}"
+        assert r.get("fiscal_cluster") in FISCAL_CLUSTER_TIERS, (
+            f"Invalid fiscal_cluster for {r['id']}: {r.get('fiscal_cluster')}"
+        )
+        assert isinstance(r.get("fiscal_cluster_rank"), int) and r["fiscal_cluster_rank"] >= 1, (
+            f"Invalid fiscal_cluster_rank for {r['id']}"
+        )
+        assert (
+            isinstance(r.get("fiscal_cluster_total"), int)
+            and r["fiscal_cluster_rank"] <= r["fiscal_cluster_total"]
+        ), f"Invalid fiscal_cluster_total for {r['id']}"
+
+    # Verify stratified balanced tertiles & contiguous 1..N peer ranks
+    for label_stratum, subset in (("provinsi", provinces), ("kab_kota", kab_kota)):
+        counts = [sum(1 for r in subset if r["fiscal_cluster"] == t) for t in FISCAL_CLUSTER_TIERS]
+        assert max(counts) - min(counts) <= 1, (
+            f"Unbalanced {label_stratum} fiscal cluster tertiles: {counts}"
+        )
+        for tier in FISCAL_CLUSTER_TIERS:
+            bucket = [r for r in subset if r["fiscal_cluster"] == tier]
+            ranks = sorted(r["fiscal_cluster_rank"] for r in bucket)
+            assert ranks == list(range(1, len(bucket) + 1)), (
+                f"Non-contiguous peer ranks in {label_stratum}:{tier}"
+            )
+            for item in bucket:
+                assert item["fiscal_cluster_total"] == len(bucket), (
+                    f"Mismatched fiscal_cluster_total for {item['id']}"
+                )
 
     assert isinstance(summary.get("fiscal_year"), int) and summary["fiscal_year"] >= 2020, (
         f"Invalid summary.fiscal_year: {summary.get('fiscal_year')}"
@@ -2104,6 +2234,8 @@ def verify_outputs(
     )
     total_grades = sum(summary["grade_distribution"].values())
     assert total_grades == len(regions), "Grade distribution count mismatch"
+    cluster_sum = sum(summary["fiscal_cluster_distribution"].values())
+    assert cluster_sum == len(regions), "Fiscal cluster distribution count mismatch"
 
     print(
         f"[VERIFY OK] 100% Real Data | {len(regions)} entities ({len(provinces)} prov + {len(kab_kota)} kab/kota: "

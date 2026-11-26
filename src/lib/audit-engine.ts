@@ -248,3 +248,58 @@ export function calculateTaxReceipt(
     items,
   };
 }
+
+/**
+ * Checks whether two regions belong to the exact same administrative stratum
+ * (Provinsi vs Kab/Kota) and identical Fiscal Capacity Cluster (Apple-to-Apple).
+ */
+export function areAppleToApplePeers(
+  regionA: RegionRecord,
+  regionB: RegionRecord
+): boolean {
+  const sameStratum =
+    (regionA.level === "provinsi") === (regionB.level === "provinsi");
+  return sameStratum && regionA.fiscal_cluster === regionB.fiscal_cluster;
+}
+
+/**
+ * Selects a deterministic Apple-to-Apple peer from the exact same entity level
+ * (Provinsi or Kab/Kota) and same fiscal_cluster as `regionA`, ranked by closest
+ * fiscal capacity index and budget scale. Cycles to the next closest peer if
+ * `currentRegionBId` is already a valid peer.
+ */
+export function findComparablePeer(
+  regionA: RegionRecord,
+  regions: RegionRecord[],
+  currentRegionBId?: string
+): RegionRecord | null {
+  const isProvA = regionA.level === "provinsi";
+  const capA = regionA.fiscal_capacity_index ?? 50;
+  const apbdA = regionA.expenditure.total_belanja_miliar;
+
+  const peers = regions
+    .filter(
+      (r) =>
+        r.id !== regionA.id &&
+        (r.level === "provinsi") === isProvA &&
+        r.fiscal_cluster === regionA.fiscal_cluster
+    )
+    .sort((x, y) => {
+      const capDiffX = Math.abs((x.fiscal_capacity_index ?? 50) - capA);
+      const capDiffY = Math.abs((y.fiscal_capacity_index ?? 50) - capA);
+      if (Math.abs(capDiffX - capDiffY) > 0.05) return capDiffX - capDiffY;
+      const apbdDiffX = Math.abs(x.expenditure.total_belanja_miliar - apbdA);
+      const apbdDiffY = Math.abs(y.expenditure.total_belanja_miliar - apbdA);
+      if (apbdDiffX !== apbdDiffY) return apbdDiffX - apbdDiffY;
+      return x.name.localeCompare(y.name, "id");
+    });
+
+  if (peers.length === 0) return null;
+  if (currentRegionBId) {
+    const currentIdx = peers.findIndex((p) => p.id === currentRegionBId);
+    if (currentIdx !== -1 && peers.length > 1) {
+      return peers[(currentIdx + 1) % peers.length];
+    }
+  }
+  return peers[0];
+}

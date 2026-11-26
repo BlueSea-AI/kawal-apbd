@@ -8,6 +8,7 @@ import {
   ChevronRight,
   ChevronsLeft,
   ChevronsRight,
+  Layers,
   MapPin,
   RotateCcw,
   Search,
@@ -31,14 +32,26 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import type { RegionRecord } from "@/types/apbd";
-import { cn, formatMiliarToTriliun, getGradeStyles } from "@/lib/utils";
+import type { FiscalCluster, RegionRecord } from "@/types/apbd";
+import {
+  cn,
+  formatMiliarToTriliun,
+  getFiscalClusterStyles,
+  getGradeStyles,
+} from "@/lib/utils";
 
 const PAGE_SIZE = 25;
+
+const CLUSTER_ORDER: Record<FiscalCluster, number> = {
+  Tinggi: 3,
+  Sedang: 2,
+  Rendah: 1,
+};
 
 type SortField =
   | "rank"
   | "name"
+  | "cluster"
   | "apbd"
   | "serapan"
   | "hkpd"
@@ -50,6 +63,7 @@ type SortField =
 interface RegionLeaderboardTableProps {
   regions: RegionRecord[];
   allRegions?: RegionRecord[];
+  fiscalYear?: number;
   selectedRegionId: string;
   onSelectRegion: (id: string) => void;
 }
@@ -57,21 +71,33 @@ interface RegionLeaderboardTableProps {
 export function RegionLeaderboardTable({
   regions,
   allRegions,
+  fiscalYear,
   selectedRegionId,
   onSelectRegion,
 }: RegionLeaderboardTableProps) {
   const [sortField, setSortField] = React.useState<SortField>("rank");
   const [sortAsc, setSortAsc] = React.useState(true);
   const [provinceFilter, setProvinceFilter] = React.useState<string>("semua");
+  const [clusterFilter, setClusterFilter] = React.useState<
+    "semua" | FiscalCluster
+  >("semua");
   const [tableQuery, setTableQuery] = React.useState<string>("");
   const [page, setPage] = React.useState<number>(1);
 
   const sourceForProvinces = allRegions ?? regions;
+  const activeFiscalYear =
+    fiscalYear ??
+    allRegions?.[0]?.fiscal_year ??
+    regions[0]?.fiscal_year ??
+    2026;
 
   // Build sorted list of all 38 provinces with entity counts for "Filter per Provinsi"
   const provinceOptions = React.useMemo(() => {
     const counts = new Map<string, number>();
     for (const r of regions) {
+      if (clusterFilter !== "semua" && r.fiscal_cluster !== clusterFilter) {
+        continue;
+      }
       counts.set(r.province_id, (counts.get(r.province_id) ?? 0) + 1);
     }
     return sourceForProvinces
@@ -82,7 +108,24 @@ export function RegionLeaderboardTable({
         count: counts.get(p.id) ?? 0,
       }))
       .sort((a, b) => a.name.localeCompare(b.name, "id"));
-  }, [sourceForProvinces, regions]);
+  }, [sourceForProvinces, regions, clusterFilter]);
+
+  const clusterCounts = React.useMemo(() => {
+    const counts: Record<FiscalCluster, number> = {
+      Tinggi: 0,
+      Sedang: 0,
+      Rendah: 0,
+    };
+    for (const r of regions) {
+      if (provinceFilter !== "semua" && r.province_id !== provinceFilter) {
+        continue;
+      }
+      if (r.fiscal_cluster in counts) {
+        counts[r.fiscal_cluster] += 1;
+      }
+    }
+    return counts;
+  }, [regions, provinceFilter]);
 
   const totalProvCount = React.useMemo(
     () => sourceForProvinces.filter((r) => r.level === "provinsi").length,
@@ -108,7 +151,7 @@ export function RegionLeaderboardTable({
     setPage(1);
   };
 
-  // Instant filtering by Province dropdown + local search (matches city/regency OR parent province OR code)
+  // Instant filtering by Province dropdown + Fiscal Cluster dropdown + local search
   const filteredAndSorted = React.useMemo(() => {
     const q = tableQuery.trim().toLowerCase();
     const tokens = q ? q.split(/\s+/).filter(Boolean) : [];
@@ -117,8 +160,12 @@ export function RegionLeaderboardTable({
       if (provinceFilter !== "semua" && r.province_id !== provinceFilter) {
         return false;
       }
+      if (clusterFilter !== "semua" && r.fiscal_cluster !== clusterFilter) {
+        return false;
+      }
       if (tokens.length > 0) {
-        const hay = `${r.name} ${r.province_name ?? ""} ${r.island} ${r.bps_code} ${r.djpk_code} ${r.level}`.toLowerCase();
+        const hay =
+          `${r.name} ${r.province_name ?? ""} ${r.island} ${r.bps_code} ${r.djpk_code} ${r.level} ${r.fiscal_cluster}`.toLowerCase();
         if (!tokens.every((t) => hay.includes(t))) {
           return false;
         }
@@ -127,6 +174,24 @@ export function RegionLeaderboardTable({
     });
 
     filtered.sort((a, b) => {
+      // Sort null BPS indicators strictly to the end regardless of sort direction
+      if (sortField === "ipm") {
+        const va = a.bps.ipm;
+        const vb = b.bps.ipm;
+        if (va === null && vb === null) return 0;
+        if (va === null) return 1;
+        if (vb === null) return -1;
+        return sortAsc ? va - vb : vb - va;
+      }
+      if (sortField === "poverty") {
+        const va = a.bps.poverty_rate_pct;
+        const vb = b.bps.poverty_rate_pct;
+        if (va === null && vb === null) return 0;
+        if (va === null) return 1;
+        if (vb === null) return -1;
+        return sortAsc ? va - vb : vb - va;
+      }
+
       let diff = 0;
       switch (sortField) {
         case "rank":
@@ -134,6 +199,12 @@ export function RegionLeaderboardTable({
           break;
         case "name":
           diff = a.name.localeCompare(b.name, "id");
+          break;
+        case "cluster":
+          diff =
+            (CLUSTER_ORDER[a.fiscal_cluster] ?? 0) -
+              (CLUSTER_ORDER[b.fiscal_cluster] ?? 0) ||
+            b.fiscal_cluster_rank - a.fiscal_cluster_rank;
           break;
         case "apbd":
           diff =
@@ -154,26 +225,22 @@ export function RegionLeaderboardTable({
         case "modal":
           diff = a.expenditure.modal_pct - b.expenditure.modal_pct;
           break;
-        case "ipm":
-          diff = (a.bps.ipm ?? -1) - (b.bps.ipm ?? -1);
-          break;
-        case "poverty":
-          diff =
-            (a.bps.poverty_rate_pct ?? 999) - (b.bps.poverty_rate_pct ?? 999);
-          break;
       }
       return sortAsc ? diff : -diff;
     });
 
     return filtered;
-  }, [regions, provinceFilter, tableQuery, sortField, sortAsc]);
+  }, [regions, provinceFilter, clusterFilter, tableQuery, sortField, sortAsc]);
 
-  const totalPages = Math.max(1, Math.ceil(filteredAndSorted.length / PAGE_SIZE));
+  const totalPages = Math.max(
+    1,
+    Math.ceil(filteredAndSorted.length / PAGE_SIZE)
+  );
   const safePage = Math.min(page, totalPages);
 
   React.useEffect(() => {
     setPage(1);
-  }, [regions, provinceFilter, tableQuery]);
+  }, [regions, provinceFilter, clusterFilter, tableQuery]);
 
   const pageStart = (safePage - 1) * PAGE_SIZE;
   const pageEnd = Math.min(filteredAndSorted.length, pageStart + PAGE_SIZE);
@@ -197,7 +264,16 @@ export function RegionLeaderboardTable({
     return items;
   }, [safePage, totalPages]);
 
-  const hasLocalFilter = provinceFilter !== "semua" || tableQuery.trim() !== "";
+  const hasLocalFilter =
+    provinceFilter !== "semua" ||
+    clusterFilter !== "semua" ||
+    tableQuery.trim() !== "";
+
+  const resetLocalFilters = () => {
+    setProvinceFilter("semua");
+    setClusterFilter("semua");
+    setTableQuery("");
+  };
 
   const SortButton = ({
     field,
@@ -232,7 +308,9 @@ export function RegionLeaderboardTable({
                 className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-400"
                 aria-hidden="true"
               />
-              <span>Direktori &amp; Peringkat Audit Nasional • TA 2025</span>
+              <span>
+                Direktori &amp; Peringkat Audit Nasional • TA {activeFiscalYear}
+              </span>
             </div>
             <CardTitle className="mt-1 text-base">
               Rapor Seluruh {totalProvCount} Provinsi &amp; {totalKabKotaCount}{" "}
@@ -240,7 +318,8 @@ export function RegionLeaderboardTable({
             </CardTitle>
             <CardDescription className="text-xs">
               Klik baris daerah untuk memuat audit rinci, arus kas DJPK, dan
-              fokus Peta 3D Nusantara.
+              fokus Peta 3D Nusantara. Gunakan Filter Klaster Fiskal untuk
+              perbandingan setara.
             </CardDescription>
           </div>
           <span className="font-mono text-xs text-muted-foreground tabular-nums">
@@ -248,9 +327,9 @@ export function RegionLeaderboardTable({
           </span>
         </div>
 
-        {/* Fast Leaderboard Search + Filter per Provinsi Toolbar */}
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-12">
-          <div className="sm:col-span-6 lg:col-span-5">
+        {/* Fast Leaderboard Search + Filter per Provinsi + Filter Klaster Fiskal */}
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-12">
+          <div className="sm:col-span-2 lg:col-span-4">
             <label
               htmlFor="leaderboard-search-input"
               className="mb-1 block font-mono text-[10px] font-semibold uppercase tracking-wider text-muted-foreground"
@@ -284,7 +363,7 @@ export function RegionLeaderboardTable({
             </div>
           </div>
 
-          <div className="sm:col-span-6 lg:col-span-5">
+          <div className="lg:col-span-3">
             <label
               htmlFor="leaderboard-province-filter"
               className="mb-1 flex items-center gap-1 font-mono text-[10px] font-semibold uppercase tracking-wider text-muted-foreground"
@@ -299,7 +378,7 @@ export function RegionLeaderboardTable({
               className="h-10 w-full rounded-md border border-input bg-background px-3 text-xs font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <option value="semua">
-                Semua Provinsi ({totalProvCount} Provinsi • {regions.length} Pemda)
+                Semua Provinsi ({totalProvCount} Prov • {regions.length} Pemda)
               </option>
               {provinceOptions.map((p) => (
                 <option key={p.id} value={p.id}>
@@ -309,16 +388,48 @@ export function RegionLeaderboardTable({
             </select>
           </div>
 
-          <div className="flex items-end justify-between gap-2 sm:col-span-12 lg:col-span-2 lg:justify-end">
+          <div className="lg:col-span-3">
+            <label
+              htmlFor="leaderboard-cluster-filter"
+              className="mb-1 flex items-center gap-1 font-mono text-[10px] font-semibold uppercase tracking-wider text-muted-foreground"
+            >
+              <Layers className="h-3 w-3" aria-hidden="true" />
+              <span>Filter Klaster Fiskal</span>
+            </label>
+            <select
+              id="leaderboard-cluster-filter"
+              value={clusterFilter}
+              onChange={(e) =>
+                setClusterFilter(e.target.value as "semua" | FiscalCluster)
+              }
+              className="h-10 w-full rounded-md border border-input bg-background px-3 text-xs font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <option value="semua">
+                Semua Klaster (
+                {clusterCounts.Tinggi +
+                  clusterCounts.Sedang +
+                  clusterCounts.Rendah}
+                )
+              </option>
+              <option value="Tinggi">
+                Fiskal Tinggi ({clusterCounts.Tinggi})
+              </option>
+              <option value="Sedang">
+                Fiskal Sedang ({clusterCounts.Sedang})
+              </option>
+              <option value="Rendah">
+                Fiskal Rendah ({clusterCounts.Rendah})
+              </option>
+            </select>
+          </div>
+
+          <div className="flex items-end justify-between gap-2 sm:col-span-2 lg:col-span-2 lg:justify-end">
             {hasLocalFilter ? (
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={() => {
-                  setProvinceFilter("semua");
-                  setTableQuery("");
-                }}
+                onClick={resetLocalFilters}
                 className="h-10 w-full font-mono text-xs lg:w-auto"
               >
                 <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
@@ -343,6 +454,9 @@ export function RegionLeaderboardTable({
                 </TableHead>
                 <TableHead>
                   <SortButton field="name" label="Daerah" />
+                </TableHead>
+                <TableHead>
+                  <SortButton field="cluster" label="Klaster" />
                 </TableHead>
                 <TableHead className="text-right">
                   <SortButton field="apbd" label="APBD" />
@@ -371,22 +485,20 @@ export function RegionLeaderboardTable({
             <TableBody>
               {pageRows.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={10} className="py-10 text-center">
+                  <TableCell colSpan={11} className="py-10 text-center">
                     <p className="text-sm font-medium text-foreground">
                       Tidak ada daerah yang cocok dengan filter saat ini.
                     </p>
                     <p className="mt-1 text-xs text-muted-foreground">
-                      Coba ubah filter provinsi atau hapus kata kunci pencarian.
+                      Coba ubah filter provinsi, klaster fiskal, atau hapus kata
+                      kunci pencarian.
                     </p>
                     {hasLocalFilter && (
                       <Button
                         type="button"
                         variant="outline"
                         size="sm"
-                        onClick={() => {
-                          setProvinceFilter("semua");
-                          setTableQuery("");
-                        }}
+                        onClick={resetLocalFilters}
                         className="mt-3 font-mono text-xs"
                       >
                         Tampilkan Semua Daerah
@@ -398,6 +510,7 @@ export function RegionLeaderboardTable({
                 pageRows.map((r) => {
                   const isSelected = r.id === selectedRegionId;
                   const gradeStyle = getGradeStyles(r.hkpd.grade);
+                  const clusterStyle = getFiscalClusterStyles(r.fiscal_cluster);
                   return (
                     <TableRow
                       key={r.id}
@@ -425,7 +538,27 @@ export function RegionLeaderboardTable({
                             : `${r.province_name} • ${r.level} • ${r.bps_code}`}
                         </div>
                       </TableCell>
-                      <TableCell className="text-right font-mono text-xs tabular-nums">
+                      <TableCell className="whitespace-nowrap">
+                        <span
+                          className={cn(
+                            "inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold",
+                            clusterStyle.badgeClass
+                          )}
+                        >
+                          <span
+                            className={cn(
+                              "h-1.5 w-1.5 rounded-full",
+                              clusterStyle.dotClass
+                            )}
+                            aria-hidden="true"
+                          />
+                          {clusterStyle.shortLabel}
+                        </span>
+                        <span className="mt-0.5 block font-mono text-[10px] text-muted-foreground tabular-nums">
+                          #{r.fiscal_cluster_rank}/{r.fiscal_cluster_total}
+                        </span>
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap text-right font-mono text-xs tabular-nums">
                         {formatMiliarToTriliun(
                           r.expenditure.total_belanja_miliar
                         )}
@@ -433,7 +566,7 @@ export function RegionLeaderboardTable({
                       <TableCell className="text-right font-mono text-xs text-muted-foreground tabular-nums">
                         {r.expenditure.serapan_belanja_pct}%
                       </TableCell>
-                      <TableCell className="text-right">
+                      <TableCell className="whitespace-nowrap text-right">
                         <Badge
                           variant={r.hkpd.grade}
                           className="font-mono text-[11px] tabular-nums"
@@ -462,12 +595,12 @@ export function RegionLeaderboardTable({
                         {r.expenditure.modal_pct}%
                       </TableCell>
                       <TableCell className="text-right font-mono text-xs tabular-nums">
-                        {r.bps.ipm !== null ? r.bps.ipm : "N/A"}
+                        {r.bps.ipm !== null ? r.bps.ipm : "—"}
                       </TableCell>
                       <TableCell className="text-right font-mono text-xs tabular-nums">
                         {r.bps.poverty_rate_pct !== null
                           ? `${r.bps.poverty_rate_pct}%`
-                          : "N/A"}
+                          : "—"}
                       </TableCell>
                       <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
                         {r.effectiveness.archetype}

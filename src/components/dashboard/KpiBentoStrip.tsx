@@ -18,6 +18,8 @@ import {
   formatMiliarToTriliun,
   formatNumberId,
   formatRupiah,
+  getEntityPeerGroupLabel,
+  getFiscalClusterStyles,
   getGradeStyles,
 } from "@/lib/utils";
 
@@ -28,6 +30,8 @@ interface KpiBentoStripProps {
 
 export function KpiBentoStrip({ region, summary }: KpiBentoStripProps) {
   const gradeStyle = getGradeStyles(region.hkpd.grade);
+  const clusterStyle = getFiscalClusterStyles(region.fiscal_cluster);
+  const peerLabel = getEntityPeerGroupLabel(region.level);
   const isTriliun = region.expenditure.total_belanja_miliar >= 1000;
   const apbdVal = isTriliun
     ? region.expenditure.total_belanja_miliar / 1000
@@ -71,7 +75,8 @@ export function KpiBentoStrip({ region, summary }: KpiBentoStripProps) {
               </strong>
             </span>
             <span className="font-mono text-[11px] tabular-nums">
-              {region.bps.apbd_per_capita_idr
+              {region.bps.apbd_per_capita_idr !== null &&
+              region.bps.apbd_per_capita_idr > 0
                 ? formatRupiah(region.bps.apbd_per_capita_idr, true) + "/jiwa"
                 : `PAD ${region.revenue.pad_ratio_pct}%`}
             </span>
@@ -192,7 +197,25 @@ export function KpiBentoStrip({ region, summary }: KpiBentoStripProps) {
               {region.effectiveness.archetype}
             </span>
             <span className="shrink-0 font-mono text-[11px] text-muted-foreground tabular-nums">
-              IPM {region.bps.ipm !== null ? region.bps.ipm : "N/A"}
+              IPM {region.bps.ipm !== null ? region.bps.ipm : "—"}
+            </span>
+          </div>
+          <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t border-border/60 pt-2">
+            <span
+              className={cn(
+                "inline-flex items-center gap-1 whitespace-nowrap rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold",
+                clusterStyle.badgeClass
+              )}
+            >
+              <span
+                className={cn("h-1.5 w-1.5 rounded-full", clusterStyle.dotClass)}
+                aria-hidden="true"
+              />
+              Klaster {clusterStyle.shortLabel}
+            </span>
+            <span className="font-mono text-[10px] text-muted-foreground tabular-nums">
+              #{region.fiscal_cluster_rank}/{region.fiscal_cluster_total}{" "}
+              {peerLabel} Setara
             </span>
           </div>
         </CardContent>

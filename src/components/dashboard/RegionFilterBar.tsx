@@ -112,60 +112,60 @@ export function RegionFilterBar({
           >
             Wilayah Kepulauan
           </label>
-          <select
-            id="island-filter-select"
-            value={islandFilter}
-            onChange={(e) =>
-              onIslandChange(e.target.value as "Semua" | IslandCluster)
-            }
-            className="h-10 w-full rounded-lg border border-input bg-background px-2.5 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            {ISLANDS.map((isl) => (
-              <option key={isl} value={isl}>
-                {isl}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        {/* Level + Grade Filters */}
-        <div className="grid grid-cols-2 gap-2 lg:col-span-3">
-          <div>
-            <label
-              htmlFor="level-filter-select"
-              className="mb-1.5 block font-mono text-[11px] font-semibold uppercase tracking-wider text-muted-foreground"
-            >
-              Tingkat
-            </label>
             <select
-              id="level-filter-select"
-              value={levelFilter}
+              id="island-filter-select"
+              value={islandFilter}
               onChange={(e) =>
-                onLevelChange(e.target.value as "semua" | RegionLevel)
+                onIslandChange(e.target.value as "Semua" | IslandCluster)
               }
-              className="h-10 w-full rounded-lg border border-input bg-background px-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="h-11 w-full rounded-lg border border-input bg-background px-2.5 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
-              <option value="semua">Semua</option>
-              <option value="provinsi">Provinsi</option>
-              <option value="kota">Kota</option>
-              <option value="kabupaten">Kabupaten</option>
+              {ISLANDS.map((isl) => (
+                <option key={isl} value={isl}>
+                  {isl}
+                </option>
+              ))}
             </select>
           </div>
-          <div>
-            <label
-              htmlFor="grade-filter-select"
-              className="mb-1.5 block font-mono text-[11px] font-semibold uppercase tracking-wider text-muted-foreground"
-            >
-              Rapor HKPD
-            </label>
-            <select
-              id="grade-filter-select"
-              value={gradeFilter}
-              onChange={(e) =>
-                onGradeChange(e.target.value as "semua" | HkpdGrade)
-              }
-              className="h-10 w-full rounded-lg border border-input bg-background px-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
+
+          {/* Level + Grade Filters */}
+          <div className="grid grid-cols-2 gap-2 lg:col-span-3">
+            <div>
+              <label
+                htmlFor="level-filter-select"
+                className="mb-1.5 block font-mono text-[11px] font-semibold uppercase tracking-wider text-muted-foreground"
+              >
+                Tingkat
+              </label>
+              <select
+                id="level-filter-select"
+                value={levelFilter}
+                onChange={(e) =>
+                  onLevelChange(e.target.value as "semua" | RegionLevel)
+                }
+                className="h-11 w-full rounded-lg border border-input bg-background px-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <option value="semua">Semua</option>
+                <option value="provinsi">Provinsi</option>
+                <option value="kota">Kota</option>
+                <option value="kabupaten">Kabupaten</option>
+              </select>
+            </div>
+            <div>
+              <label
+                htmlFor="grade-filter-select"
+                className="mb-1.5 block font-mono text-[11px] font-semibold uppercase tracking-wider text-muted-foreground"
+              >
+                Rapor HKPD
+              </label>
+              <select
+                id="grade-filter-select"
+                value={gradeFilter}
+                onChange={(e) =>
+                  onGradeChange(e.target.value as "semua" | HkpdGrade)
+                }
+                className="h-11 w-full rounded-lg border border-input bg-background px-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
               <option value="semua">Semua</option>
               <option value="hijau">Rapor Hijau</option>
               <option value="kuning">Rapor Kuning</option>
