@@ -58,10 +58,33 @@ RAW_DJPK_CATALOG_DIR = RAW_DJPK_DIR / "pemda_catalog"
 RAW_BPS_DIR = RAW_DIR / "bps"
 OUTPUT_DIR = ROOT_DIR / "public" / "data"
 
-DEFAULT_FISCAL_YEAR = 2025
-DEFAULT_DJPK_PERIODE = 12  # Full year (Januari - Desember)
+DEFAULT_DJPK_MAX_LOOKBACK_YEARS = 5
 DEFAULT_POLITE_DELAY = 0.35  # 0.3s - 0.5s polite throttling between live request starts
 DEFAULT_WORKERS = 4  # Low concurrency paired with global PoliteRateLimiter
+
+INDONESIAN_MONTHS = (
+    "Januari",
+    "Februari",
+    "Maret",
+    "April",
+    "Mei",
+    "Juni",
+    "Juli",
+    "Agustus",
+    "September",
+    "Oktober",
+    "November",
+    "Desember",
+)
+
+# Representative geographically diverse provinces used to probe newest published DJPK year & period
+DEFAULT_PROBE_PROVINCES: list[tuple[str, str]] = [
+    ("prov-31", "09"),  # DKI Jakarta
+    ("prov-32", "10"),  # Jawa Barat
+    ("prov-35", "13"),  # Jawa Timur
+    ("prov-12", "02"),  # Sumatera Utara
+    ("prov-73", "20"),  # Sulawesi Selatan
+]
 
 
 class PoliteRateLimiter:
@@ -320,6 +343,14 @@ def fetch_djpk_pemda_catalog(
     return data, True
 
 
+def format_djpk_periode(year: int, periode: int) -> str:
+    """Formats a verified DJPK period (1-12) and fiscal year into a human-readable Indonesian label."""
+    p = max(1, min(12, int(periode)))
+    if p == 1:
+        return f"Periode 1 (Januari TA {year})"
+    return f"Periode {p} (Januari–{INDONESIAN_MONTHS[p - 1]} TA {year})"
+
+
 def fetch_djpk_xml(
     rid: str,
     year: int,
@@ -328,6 +359,7 @@ def fetch_djpk_xml(
     djpk_pemda: str,
     refresh: bool,
     limiter: PoliteRateLimiter,
+    max_attempts: int = 4,
 ) -> tuple[str, str, str, bool]:
     """Fetches & atomically caches official DJPK SpreadsheetML XML. Returns (rid, url, xml_text, hit_network)."""
     RAW_DJPK_DIR.mkdir(parents=True, exist_ok=True)
@@ -337,23 +369,30 @@ def fetch_djpk_xml(
     if cache_path.exists() and not refresh:
         cached_text = cache_path.read_text(encoding="utf-8")
         if "<Workbook" in cached_text and "</Workbook>" in cached_text:
-            return rid, url, cached_text, False
+            try:
+                ET.fromstring(cached_text)
+                return rid, url, cached_text, False
+            except ET.ParseError:
+                pass
 
+    attempts = max(1, int(max_attempts))
     last_err: Exception | None = None
-    for attempt in range(4):
+    for attempt in range(attempts):
         try:
             limiter.wait()
-            raw_bytes = http_get_bytes(url, timeout=35)
+            raw_bytes = http_get_bytes(url, timeout=35, max_retries=attempts)
             xml_text = raw_bytes.decode("utf-8", errors="replace")
             if "<Workbook" not in xml_text or "</Workbook>" not in xml_text:
                 raise ValueError(f"Unexpected/truncated DJPK XML response for {rid} ({url})")
+            # Validate well-formed XML before caching (unpublished years can return broken XML)
+            ET.fromstring(xml_text)
             tmp_path = cache_path.with_suffix(".xml.tmp")
             tmp_path.write_text(xml_text, encoding="utf-8")
             tmp_path.replace(cache_path)
             return rid, url, xml_text, True
         except Exception as exc:
             last_err = exc
-            if attempt < 3:
+            if attempt < attempts - 1:
                 backoff = 1.5 * (2 ** attempt)
                 print(f"  [RETRY XML] {rid} ({exc}) -> waiting {backoff:.1f}s...", flush=True)
                 time.sleep(backoff)
@@ -361,6 +400,103 @@ def fetch_djpk_xml(
             raise
     assert last_err is not None
     raise last_err
+
+
+def has_valid_djpk_apbd(accounts: dict[str, tuple[float, float]]) -> bool:
+    """Returns True when parsed DJPK accounts contain positive Pendapatan Daerah and Belanja Daerah."""
+    pend_ang = accounts.get("Pendapatan Daerah", (0.0, 0.0))[0]
+    bel_ang = accounts.get("Belanja Daerah", (0.0, 0.0))[0]
+    return pend_ang > 0.0 and bel_ang > 0.0
+
+
+def probe_latest_djpk_year_and_periode(
+    start_year: int | None = None,
+    max_lookback: int = DEFAULT_DJPK_MAX_LOOKBACK_YEARS,
+    refresh: bool = False,
+    polite_delay: float = DEFAULT_POLITE_DELAY,
+    target_year: int | None = None,
+    target_periode: int | None = None,
+    probe_provinces: list[tuple[str, str]] | None = None,
+    min_valid_provinces: int = 3,
+    fetch_fn: Any = None,
+) -> tuple[int, int]:
+    """
+    Dynamically probes DJPK fiscal years downward starting from `start_year`
+    (defaults to `datetime.now().year`) and periods from 12 down to 1, selecting
+    the newest (fiscal_year, periode) that returns valid non-empty APBD data
+    across a quorum of provinces.
+    """
+    if target_year is not None and target_periode is not None:
+        return int(target_year), max(1, min(12, int(target_periode)))
+
+    base_year = int(start_year) if start_year is not None else datetime.now().year
+    candidate_years = (
+        [int(target_year)]
+        if target_year is not None
+        else list(range(base_year, base_year - max(0, int(max_lookback)) - 1, -1))
+    )
+    candidate_periodes = (
+        [max(1, min(12, int(target_periode)))]
+        if target_periode is not None
+        else list(range(12, 0, -1))
+    )
+
+    provinces = probe_provinces if probe_provinces is not None else DEFAULT_PROBE_PROVINCES
+    required = max(1, min(int(min_valid_provinces), len(provinces)))
+    limiter = PoliteRateLimiter(polite_delay)
+
+    def _default_fetch(
+        rid: str, yr: int, per: int, djpk_prov: str, djpk_pemda: str, ref: bool, lim: PoliteRateLimiter
+    ) -> tuple[str, str, str, bool]:
+        return fetch_djpk_xml(rid, yr, per, djpk_prov, djpk_pemda, ref, lim, max_attempts=1)
+
+    fetcher = fetch_fn if fetch_fn is not None else _default_fetch
+
+    for yr in candidate_years:
+        # Fast pre-check when running live: if DJPK catalog explicitly reports no "00" province
+        # entry for this year (e.g., future year not yet opened), skip straight to the next year.
+        if fetch_fn is None and provinces:
+            sample_prov = provinces[0][1]
+            cat_cache = RAW_DJPK_CATALOG_DIR / f"{yr}_prov_{sample_prov}.json"
+            if not (cat_cache.exists() and not refresh):
+                try:
+                    limiter.wait()
+                    cat_url = f"https://djpk.kemenkeu.go.id/portal/pemda/{sample_prov}/{yr}"
+                    cat_data = json.loads(http_get_bytes(cat_url, timeout=15, max_retries=1).decode("utf-8"))
+                    if isinstance(cat_data, dict) and "00" not in cat_data:
+                        print(f"  [PROBE] DJPK TA {yr}: catalog not yet open (no '00' entry) -> skipping", flush=True)
+                        continue
+                except Exception:
+                    # Network error or unexpected response: fall through to XML check (supports cached fallback)
+                    pass
+
+        for per in candidate_periodes:
+            valid_count = 0
+            total = len(provinces)
+            for idx, (rid, djpk_prov) in enumerate(provinces):
+                remaining_after = total - idx - 1
+                try:
+                    _, _, xml_text, _ = fetcher(rid, yr, per, djpk_prov, "00", refresh, limiter)
+                    accounts = parse_djpk_xml(xml_text)
+                    if has_valid_djpk_apbd(accounts):
+                        valid_count += 1
+                except Exception:
+                    pass
+
+                if valid_count >= required:
+                    print(
+                        f"  [PROBE OK] Selected DJPK TA {yr} Periode {per} "
+                        f"({valid_count}/{idx + 1} probed provinces valid)",
+                        flush=True,
+                    )
+                    return yr, per
+                if valid_count + remaining_after < required:
+                    break
+
+    raise RuntimeError(
+        f"Could not find any valid non-empty DJPK APBD dataset across years {candidate_years} "
+        f"and periods {candidate_periodes}."
+    )
 
 
 def parse_djpk_xml(xml_text: str) -> dict[str, tuple[float, float]]:
@@ -507,6 +643,92 @@ def fetch_bps_table(table_key: str, refresh: bool, polite_delay: float) -> dict[
     return parsed
 
 
+def parse_bps_year_label(label: Any) -> int | None:
+    """Extracts a 4-digit calendar year (e.g., 2026) from a BPS tahun label string."""
+    match = re.search(r"(19|20)\d{2}", str(label or ""))
+    return int(match.group(0)) if match else None
+
+
+def sort_bps_years(table: dict[str, Any]) -> list[tuple[str, int | None]]:
+    """
+    Dynamically extracts and sorts available `(tahun_val, calendar_year)` pairs
+    from a BPS API/table response from newest to oldest without hardcoding year IDs.
+    """
+    raw_tahun = table.get("tahun") or []
+    entries: list[tuple[int, int, str, int | None]] = []
+    for item in raw_tahun:
+        if not isinstance(item, dict) or "val" not in item:
+            continue
+        val_str = str(item["val"]).strip()
+        if not val_str:
+            continue
+        year_int = parse_bps_year_label(item.get("label"))
+        try:
+            val_num = int(val_str)
+        except ValueError:
+            val_num = -1
+        entries.append((year_int or 0, val_num, val_str, year_int))
+
+    entries.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    return [(val_str, year_int) for _, _, val_str, year_int in entries]
+
+
+def _ordered_turvar_candidates(
+    turvar_list: list[dict[str, Any]], preferred_turvar: str | None
+) -> list[str]:
+    candidates: list[str] = []
+    if preferred_turvar is not None:
+        candidates.append(str(preferred_turvar))
+    # Prefer aggregate ("Jumlah" / "Total") before other breakdowns if preferred ID changed
+    prioritized = sorted(
+        (t for t in turvar_list if isinstance(t, dict) and "val" in t),
+        key=lambda t: (
+            0 if any(tok in str(t.get("label", "")).lower() for tok in ("jumlah", "total")) else 1,
+            str(t["val"]),
+        ),
+    )
+    for t in prioritized:
+        val_str = str(t["val"])
+        if val_str not in candidates:
+            candidates.append(val_str)
+    if not candidates:
+        candidates.append("0")
+    return candidates
+
+
+def _ordered_turtahun_candidates(
+    turtahun_list: list[dict[str, Any]], preferred_turtahun: list[int] | None
+) -> list[str]:
+    candidates: list[str] = []
+    if preferred_turtahun is not None:
+        for tt in preferred_turtahun:
+            tt_str = str(tt)
+            if tt_str not in candidates:
+                candidates.append(tt_str)
+    # Dynamically include all turtahun IDs present in the BPS response (descending so later periods
+    # such as Semester 2 / Agustus / Tahunan are preferred over earlier periods)
+    def _tt_sort_key(item: dict[str, Any]) -> tuple[int, int]:
+        label = str(item.get("label", "")).lower()
+        priority = 2 if ("semester 2" in label or "agustus" in label) else 1 if "tahunan" in label else 0
+        try:
+            num = int(item["val"])
+        except (TypeError, ValueError):
+            num = -1
+        return (priority, num)
+
+    for t in sorted(
+        (item for item in turtahun_list if isinstance(item, dict) and "val" in item),
+        key=_tt_sort_key,
+        reverse=True,
+    ):
+        val_str = str(t["val"])
+        if val_str not in candidates:
+            candidates.append(val_str)
+    if not candidates:
+        candidates.append("0")
+    return candidates
+
+
 def lookup_bps_value(
     table: dict[str, Any],
     vervar_code: int,
@@ -514,43 +736,60 @@ def lookup_bps_value(
     preferred_turtahun: list[int] | None = None,
 ) -> tuple[float | None, int | None]:
     """
-    Looks up a verified numeric observation from a BPS table dict.
+    Looks up the newest verified numeric observation from a BPS table dict.
     BPS datacontent keys follow: "{vervar}{var_id}{turvar}{tahun_val}{turtahun_val}".
+    Dynamically selects the latest available year key from `table["tahun"]` rather
+    than hardcoding BPS year IDs, and falls back across available turvar/turtahun keys.
     """
     var_list = table.get("var") or []
-    tahun_list = table.get("tahun") or []
     turvar_list = table.get("turvar") or []
     turtahun_list = table.get("turtahun") or []
     dc = table.get("datacontent") or {}
 
-    if not var_list or not tahun_list:
+    sorted_years = sort_bps_years(table)
+    if not var_list or not sorted_years:
         return None, None
 
     var_id = str(var_list[0]["val"])
-    turvar_val = (
-        preferred_turvar
-        if preferred_turvar is not None
-        else str(turvar_list[0]["val"]) if turvar_list else "0"
-    )
+    turvar_candidates = _ordered_turvar_candidates(turvar_list, preferred_turvar)
+    tt_candidates = _ordered_turtahun_candidates(turtahun_list, preferred_turtahun)
 
-    sorted_years = sorted(tahun_list, key=lambda x: int(x["val"]), reverse=True)
-    tt_candidates = (
-        preferred_turtahun
-        if preferred_turtahun is not None
-        else [int(t["val"]) for t in turtahun_list] or [0]
-    )
-
-    for th in sorted_years:
-        th_val = str(th["val"])
-        year_label = int(re.sub(r"\D", "", str(th["label"])) or "0") or None
-        for tt in tt_candidates:
-            key = f"{vervar_code}{var_id}{turvar_val}{th_val}{tt}"
-            if key in dc and dc[key] is not None:
-                try:
-                    return float(dc[key]), year_label
-                except (TypeError, ValueError):
-                    continue
+    for th_val, year_label in sorted_years:
+        for tv in turvar_candidates:
+            for tt in tt_candidates:
+                key = f"{vervar_code}{var_id}{tv}{th_val}{tt}"
+                if key in dc and dc[key] is not None:
+                    try:
+                        return float(dc[key]), year_label
+                    except (TypeError, ValueError):
+                        continue
     return None, None
+
+
+def detect_latest_bps_year(bps_data: dict[str, dict[str, Any]]) -> int | None:
+    """
+    Dynamically detects the newest calendar year that actually contains non-null
+    observations across the fetched BPS API/table responses.
+    """
+    detected_years: list[int] = []
+    for table in bps_data.values():
+        var_list = table.get("var") or []
+        dc = table.get("datacontent") or {}
+        if not var_list or not dc:
+            continue
+        var_id = str(var_list[0]["val"])
+        turtahun_vals = [str(t["val"]) for t in (table.get("turtahun") or []) if isinstance(t, dict) and "val" in t] or ["0"]
+        turvar_vals = [str(t["val"]) for t in (table.get("turvar") or []) if isinstance(t, dict) and "val" in t] or ["0"]
+        non_null_keys = [k for k, v in dc.items() if v is not None]
+
+        for th_val, year_int in sort_bps_years(table):
+            if year_int is None:
+                continue
+            suffixes = tuple(f"{tv}{th_val}{tt}" for tv in turvar_vals for tt in turtahun_vals)
+            if any(var_id in k and k.endswith(suffixes) for k in non_null_keys):
+                detected_years.append(year_int)
+                break
+    return max(detected_years) if detected_years else None
 
 
 # ---------------------------------------------------------------------------
@@ -1140,8 +1379,8 @@ def summarize_tier(items: list[dict[str, Any]]) -> dict[str, Any]:
 # 7. Master Full-National Build Pipeline
 # ---------------------------------------------------------------------------
 def build_datasets(
-    fiscal_year: int = DEFAULT_FISCAL_YEAR,
-    periode: int = DEFAULT_DJPK_PERIODE,
+    fiscal_year: int | None = None,
+    periode: int | None = None,
     refresh: bool = False,
     polite_delay: float = DEFAULT_POLITE_DELAY,
     workers: int = DEFAULT_WORKERS,
@@ -1149,13 +1388,38 @@ def build_datasets(
     verified_timestamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     limiter = PoliteRateLimiter(polite_delay)
 
+    print(
+        f"[ETL] Step 0/5: Probing newest available DJPK fiscal year & period "
+        f"(from {fiscal_year or datetime.now().year} downward, periode={periode or '12..1'})...",
+        flush=True,
+    )
+    resolved_year, resolved_periode = probe_latest_djpk_year_and_periode(
+        start_year=datetime.now().year,
+        refresh=refresh,
+        polite_delay=polite_delay,
+        target_year=fiscal_year,
+        target_periode=periode,
+    )
+    fiscal_year = resolved_year
+    periode = resolved_periode
+
     print(f"[ETL] Step 1/5: Loading official BPS tables (refresh={refresh})...", flush=True)
     bps_data: dict[str, dict[str, Any]] = {}
     for k in BPS_TABLES:
         bps_data[k] = fetch_bps_table(k, refresh, polite_delay)
-        print(f"  [BPS OK] {k} (rows={len(bps_data[k]['datacontent'])})", flush=True)
+        bps_years = [yr for _, yr in sort_bps_years(bps_data[k]) if yr is not None]
+        print(
+            f"  [BPS OK] {k} (rows={len(bps_data[k]['datacontent'])}, years={bps_years})",
+            flush=True,
+        )
+    global_bps_year = detect_latest_bps_year(bps_data)
+    print(f"  [BPS YEAR] Dynamically detected latest BPS year: {global_bps_year}", flush=True)
 
-    print(f"[ETL] Step 2/5: Enumerating all 38 provinces + official DJPK Kab/Kota catalog (TA {fiscal_year})...", flush=True)
+    print(
+        f"[ETL] Step 2/5: Enumerating all 38 provinces + official DJPK Kab/Kota catalog "
+        f"(TA {fiscal_year}, Periode {periode})...",
+        flush=True,
+    )
     national_registry = build_national_registry(
         fiscal_year=fiscal_year,
         bps_ipm_kabkota=bps_data["ipm_kabkota"],
@@ -1350,7 +1614,8 @@ def build_datasets(
         apbd_per_capita_idr: int | None = (
             round((bel_ang * 1_000_000_000.0) / population) if population and population > 0 else None
         )
-        bps_year = ipm_year or pov_year or tpt_year or 2026
+        available_bps_years = [y for y in (ipm_year, pov_year, tpt_year) if y is not None]
+        bps_year = max(available_bps_years) if available_bps_years else (global_bps_year or rec_year)
 
         # Centroid: authentic GeoJSON centroid for provinces & Kab/Kota (fallback to parent province)
         centroid = fallback_centroid
@@ -1471,7 +1736,8 @@ def build_datasets(
                 },
                 "provenance": {
                     "fiscal_year": rec_year,
-                    "djpk_periode": f"Periode {rec_periode} (Januari–Desember TA {rec_year})",
+                    "bps_year": bps_year,
+                    "djpk_periode": format_djpk_periode(rec_year, rec_periode),
                     "djpk_source_url": source_djpk_url,
                     "bps_source_url": bps_primary_url,
                     "bps_indicators_urls": bps_urls,
@@ -1522,21 +1788,36 @@ def build_datasets(
     valid_pend = [r["expenditure"]["pendidikan_pct"] for r in regions if r["expenditure"]["pendidikan_pct"] is not None]
 
     # National benchmark from BPS Indonesia row (vervar 9999) if available
-    nat_ipm, nat_bps_year = lookup_bps_value(bps_data["ipm_prov"], 9999)
-    nat_pov, _ = lookup_bps_value(
+    nat_ipm, nat_ipm_year = lookup_bps_value(bps_data["ipm_prov"], 9999)
+    nat_pov, nat_pov_year = lookup_bps_value(
         bps_data["poverty_pct_prov"], 9999, preferred_turvar="434", preferred_turtahun=[62, 61, 63]
     )
-    nat_tpt, _ = lookup_bps_value(bps_data["tpt_prov"], 9999, preferred_turtahun=[190, 189, 191])
+    nat_tpt, nat_tpt_year = lookup_bps_value(bps_data["tpt_prov"], 9999, preferred_turtahun=[190, 189, 191])
+    nat_bps_candidates = [
+        y for y in (nat_ipm_year, nat_pov_year, nat_tpt_year, global_bps_year) if y is not None
+    ]
+    detected_bps_year = (
+        max(nat_bps_candidates)
+        if nat_bps_candidates
+        else max((r["bps"]["year"] for r in regions), default=fiscal_year)
+    )
 
     summary = {
         "fiscal_year": fiscal_year,
-        "bps_year": nat_bps_year or 2026,
+        "djpk_periode": periode,
+        "bps_year": detected_bps_year,
         "generated_at": verified_timestamp,
         "is_verified_real_data": True,
         "coverage_scope": "Nasional Penuh (38 Provinsi + Seluruh Kab/Kota Otonom DJPK)",
         "data_sources": [
-            f"DJPK Kementerian Keuangan RI — Portal Data SIKD APBD TA {fiscal_year} ({len(regions)} Pemda: 38 Provinsi + {len(kab_kota)} Kab/Kota Otonom)",
-            "Badan Pusat Statistik (BPS RI) — IPM LF SP2020 (var 2207/2205), Kemiskinan P0 (var 192/621), TPT Provinsi (var 543)",
+            (
+                f"DJPK Kementerian Keuangan RI — Portal Data SIKD APBD {format_djpk_periode(fiscal_year, periode)} "
+                f"({len(regions)} Pemda: 38 Provinsi + {len(kab_kota)} Kab/Kota Otonom)"
+            ),
+            (
+                f"Badan Pusat Statistik (BPS RI, rilis {detected_bps_year}) — "
+                f"IPM LF SP2020 (var 2207/2205), Kemiskinan P0 (var 192/621), TPT Provinsi (var 543)"
+            ),
             "UU No. 1 Tahun 2022 (UU HKPD — Plafon Belanja Pegawai <= 30%)",
             "Batas Administrasi 38 Provinsi Indonesia (BIG/BPS Open GeoJSON)",
         ],
@@ -1680,6 +1961,12 @@ def verify_outputs(
 
         prov = r.get("provenance") or {}
         assert prov.get("is_verified_real_data") is True, f"Unverified record: {r['id']}"
+        assert isinstance(prov.get("fiscal_year"), int) and prov["fiscal_year"] >= 2020, (
+            f"Invalid provenance.fiscal_year for {r['id']}: {prov.get('fiscal_year')}"
+        )
+        assert prov["fiscal_year"] == r["fiscal_year"], (
+            f"Mismatched fiscal_year vs provenance.fiscal_year for {r['id']}"
+        )
         assert str(prov.get("djpk_source_url", "")).startswith("https://djpk.kemenkeu.go.id/"), (
             f"Invalid DJPK URL for {r['id']}"
         )
@@ -1695,13 +1982,23 @@ def verify_outputs(
         for k in ("fiscal_finding", "social_correlation", "policy_recommendation"):
             assert len(r["ai_audit"][k]) > 40, f"Audit narrative '{k}' too short for {r['id']}"
 
+    assert isinstance(summary.get("fiscal_year"), int) and summary["fiscal_year"] >= 2020, (
+        f"Invalid summary.fiscal_year: {summary.get('fiscal_year')}"
+    )
+    assert isinstance(summary.get("bps_year"), int) and summary["bps_year"] >= 2020, (
+        f"Invalid summary.bps_year: {summary.get('bps_year')}"
+    )
+    assert isinstance(summary.get("djpk_periode"), int) and 1 <= summary["djpk_periode"] <= 12, (
+        f"Invalid summary.djpk_periode: {summary.get('djpk_periode')}"
+    )
     total_grades = sum(summary["grade_distribution"].values())
     assert total_grades == len(regions), "Grade distribution count mismatch"
 
     print(
         f"[VERIFY OK] 100% Real Data | {len(regions)} entities ({len(provinces)} prov + {len(kab_kota)} kab/kota: "
         f"{summary['total_kabupaten']} kab, {summary['total_kota']} kota) | "
-        f"Total APBD TA {summary['fiscal_year']}: Rp {summary['total_apbd_triliun']} T "
+        f"Total APBD TA {summary['fiscal_year']} P{summary['djpk_periode']} (BPS {summary['bps_year']}): "
+        f"Rp {summary['total_apbd_triliun']} T "
         f"(Prov: Rp {summary['total_provinsi_apbd_triliun']} T | Kab/Kota: Rp {summary['total_kab_kota_apbd_triliun']} T) | "
         f"GeoJSON: {size_kb:.1f} KB ({vertices:,} vertices) | "
         f"Grades -> Hijau: {summary['grade_distribution']['hijau']}, "
@@ -1712,8 +2009,18 @@ def verify_outputs(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Kawal APBD Full-National Zero-Fabrication Real Data ETL Pipeline")
-    parser.add_argument("--year", type=int, default=DEFAULT_FISCAL_YEAR, help="DJPK APBD fiscal year (default: 2025)")
-    parser.add_argument("--periode", type=int, default=DEFAULT_DJPK_PERIODE, help="DJPK month periode 1-12 (default: 12)")
+    parser.add_argument(
+        "--year",
+        type=int,
+        default=None,
+        help="Optional explicit DJPK APBD fiscal year override (default: auto-probe downward from current year)",
+    )
+    parser.add_argument(
+        "--periode",
+        type=int,
+        default=None,
+        help="Optional explicit DJPK month periode 1-12 override (default: auto-probe latest 12..1)",
+    )
     parser.add_argument(
         "--delay",
         type=float,
