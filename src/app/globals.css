@@ -1,0 +1,194 @@
+@import "tailwindcss";
+@import "maplibre-gl/dist/maplibre-gl.css";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ==========================================================================
+   Kawal APBD — Editorial Data-Journalism & Institutional Fiscal Token System
+   Light Mode: Warm Off-White Paper (#F8F7F4) + Deep Slate Ink (#0F172A)
+   Dark Mode:  Obsidian Charcoal (#0B0F17) + Paper Ink (#F8FAFC)
+   Accents:    Strict Semantic Audit Colors (Emerald / Amber / Crimson)
+   ========================================================================== */
+
+:root {
+  --background: #f8f7f4;
+  --foreground: #0f172a;
+  --card: #ffffff;
+  --card-foreground: #0f172a;
+  --popover: #ffffff;
+  --popover-foreground: #0f172a;
+  --primary: #0f172a;
+  --primary-foreground: #f8f7f4;
+  --secondary: #efece6;
+  --secondary-foreground: #1e293b;
+  --muted: #f1efe9;
+  --muted-foreground: #475569;
+  --accent: #b45309;
+  --accent-foreground: #ffffff;
+  --destructive: #dc2626;
+  --destructive-foreground: #ffffff;
+  --border: #e2dfd7;
+  --input: #cfc9bc;
+  --ring: #0f172a;
+  --radius: 0.5rem;
+
+  /* Strict Fiscal Audit Semantic Tokens */
+  --rapor-hijau: #059669;
+  --rapor-hijau-bg: #ecfdf5;
+  --rapor-hijau-border: #a7f3d0;
+  --rapor-kuning: #d97706;
+  --rapor-kuning-bg: #fffbeb;
+  --rapor-kuning-border: #fde68a;
+  --rapor-merah: #dc2626;
+  --rapor-merah-bg: #fef2f2;
+  --rapor-merah-border: #fecaca;
+
+  /* Institutional Chart Palette */
+  --chart-ink: #0f172a;
+  --chart-blue: #1d4ed8;
+  --chart-teal: #0f766e;
+  --chart-emerald: #059669;
+  --chart-amber: #d97706;
+  --chart-crimson: #dc2626;
+  --chart-slate: #64748b;
+}
+
+.dark {
+  --background: #0b0f17;
+  --foreground: #f8fafc;
+  --card: #121826;
+  --card-foreground: #f8fafc;
+  --popover: #161e2e;
+  --popover-foreground: #f8fafc;
+  --primary: #f8fafc;
+  --primary-foreground: #0b0f17;
+  --secondary: #1b2436;
+  --secondary-foreground: #e2e8f0;
+  --muted: #172030;
+  --muted-foreground: #94a3b8;
+  --accent: #f59e0b;
+  --accent-foreground: #0b0f17;
+  --destructive: #ef4444;
+  --destructive-foreground: #ffffff;
+  --border: #222d42;
+  --input: #2e3b55;
+  --ring: #94a3b8;
+
+  /* Dark Mode Semantic Audit Tokens (High-Contrast >= 4.5:1) */
+  --rapor-hijau: #34d399;
+  --rapor-hijau-bg: rgba(5, 150, 105, 0.16);
+  --rapor-hijau-border: rgba(52, 211, 153, 0.35);
+  --rapor-kuning: #fbbf24;
+  --rapor-kuning-bg: rgba(217, 119, 6, 0.16);
+  --rapor-kuning-border: rgba(251, 191, 36, 0.35);
+  --rapor-merah: #f87171;
+  --rapor-merah-bg: rgba(220, 38, 38, 0.16);
+  --rapor-merah-border: rgba(248, 113, 113, 0.35);
+
+  --chart-ink: #e2e8f0;
+  --chart-blue: #60a5fa;
+  --chart-teal: #2dd4bf;
+  --chart-emerald: #34d399;
+  --chart-amber: #fbbf24;
+  --chart-crimson: #f87171;
+  --chart-slate: #94a3b8;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --font-sans: var(--font-plus-jakarta), system-ui, -apple-system, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, SFMono-Regular, monospace;
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased selection:bg-emerald-600/20 selection:text-foreground overflow-x-hidden;
+  }
+
+  button:not(:disabled),
+  a[href],
+  select,
+  [role="button"],
+  [role="tab"] {
+    cursor: pointer;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Thermal POS Receipt paper serrated edge */
+.receipt-zig-top {
+  background-image: linear-gradient(135deg, transparent 50%, #fffdf8 50%),
+    linear-gradient(225deg, transparent 50%, #fffdf8 50%);
+  background-position: top left;
+  background-size: 14px 14px;
+  background-repeat: repeat-x;
+}
+
+.receipt-zig-bottom {
+  background-image: linear-gradient(45deg, transparent 50%, #fffdf8 50%),
+    linear-gradient(315deg, transparent 50%, #fffdf8 50%);
+  background-position: bottom left;
+  background-size: 14px 14px;
+  background-repeat: repeat-x;
+}
+
+/* MapLibre popup clean styling */
+.maplibregl-popup-content {
+  padding: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  border-radius: 0.5rem !important;
+}
+
+.maplibregl-popup-tip {
+  display: none !important;
+}
+
+.maplibregl-ctrl-attrib {
+  font-size: 10px !important;
+  opacity: 0.75;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
