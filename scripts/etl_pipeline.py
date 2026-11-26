@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import csv
+import http.cookiejar
 import json
 import math
 import os
@@ -116,10 +117,22 @@ PENDIDIKAN_MIN_PCT = 20.0       # UUD 1945 & UU Sisdiknas Mandatory Spending (wh
 MODAL_BENCHMARK_PCT = 15.0      # Direct DJPK Belanja Modal benchmark when HKPD 40% tagging is unpublished
 
 HEADERS = {
-    "User-Agent": "KawalAPBD-OpenData-ETL/3.0 (+https://djpk.kemenkeu.go.id; civic-transparency)",
-    "Accept": "*/*",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/131.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7",
+    "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8",
+    "Referer": "https://www.bps.go.id/",
+    "Connection": "keep-alive",
 }
 SSL_CTX = ssl.create_default_context()
+COOKIE_JAR = http.cookiejar.CookieJar()
+HTTP_OPENER = urllib.request.build_opener(
+    urllib.request.HTTPSHandler(context=SSL_CTX),
+    urllib.request.HTTPCookieProcessor(COOKIE_JAR),
+)
 JSON_DEC = json.JSONDecoder()
 
 # Official Public BPS Dynamic Table URLs (zero auth required; also compatible with BPS_API_KEY)
@@ -280,18 +293,39 @@ def clean_region_label(s: str) -> str:
     return s
 
 
+def _describe_fetch_error(exc: Exception) -> str:
+    if isinstance(exc, urllib.error.HTTPError):
+        return f"HTTP {exc.code}"
+    if isinstance(exc, TimeoutError):
+        return "network timeout"
+    if isinstance(exc, urllib.error.URLError):
+        return f"network error: {exc.reason}"
+    return str(exc)
+
+
+def _display_cache_path(path: Path) -> str:
+    try:
+        return path.resolve().relative_to(ROOT_DIR.resolve()).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
 def http_get_bytes(
     url: str,
     timeout: int = 30,
     max_retries: int = 4,
     base_backoff: float = 1.5,
 ) -> bytes:
-    """Polite HTTP GET with exponential backoff retry on transient errors."""
+    """Polite HTTP GET with browser-grade headers, session cookies, and backoff retry on transient errors."""
+    req_headers = dict(HEADERS)
+    if "djpk.kemenkeu.go.id" in url:
+        req_headers["Referer"] = "https://djpk.kemenkeu.go.id/"
+
     last_exc: Exception | None = None
     for attempt in range(max_retries):
         try:
-            req = urllib.request.Request(url, headers=HEADERS)
-            with urllib.request.urlopen(req, timeout=timeout, context=SSL_CTX) as resp:
+            req = urllib.request.Request(url, headers=req_headers)
+            with HTTP_OPENER.open(req, timeout=timeout) as resp:
                 return resp.read()
         except urllib.error.HTTPError as exc:
             last_exc = exc
@@ -333,14 +367,29 @@ def fetch_djpk_pemda_catalog(
         return json.loads(cache_path.read_text(encoding="utf-8")), False
 
     url = f"https://djpk.kemenkeu.go.id/portal/pemda/{djpk_prov}/{year}"
-    raw_bytes = http_get_bytes(url, timeout=25)
-    data = json.loads(raw_bytes.decode("utf-8"))
-    if not isinstance(data, dict) or "00" not in data:
-        raise ValueError(f"Unexpected DJPK pemda catalog for prov={djpk_prov}, year={year}")
-    cache_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    if polite_delay > 0:
-        time.sleep(polite_delay)
-    return data, True
+    try:
+        raw_bytes = http_get_bytes(url, timeout=25)
+        data = json.loads(raw_bytes.decode("utf-8"))
+        if not isinstance(data, dict) or "00" not in data:
+            raise ValueError(f"Unexpected DJPK pemda catalog for prov={djpk_prov}, year={year}")
+        cache_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        if polite_delay > 0:
+            time.sleep(polite_delay)
+        return data, True
+    except Exception as exc:
+        if cache_path.exists():
+            try:
+                cached = json.loads(cache_path.read_text(encoding="utf-8"))
+                if isinstance(cached, dict) and "00" in cached:
+                    print(
+                        f"  [WARN] Live endpoint blocked ({_describe_fetch_error(exc)}), "
+                        f"falling back to verified cached data in {_display_cache_path(cache_path)}",
+                        flush=True,
+                    )
+                    return cached, False
+            except Exception:
+                pass
+        raise
 
 
 def format_djpk_periode(year: int, periode: int) -> str:
@@ -349,6 +398,19 @@ def format_djpk_periode(year: int, periode: int) -> str:
     if p == 1:
         return f"Periode 1 (Januari TA {year})"
     return f"Periode {p} (Januari–{INDONESIAN_MONTHS[p - 1]} TA {year})"
+
+
+def _read_valid_cached_xml(cache_path: Path) -> str | None:
+    if not cache_path.exists():
+        return None
+    cached_text = cache_path.read_text(encoding="utf-8")
+    if "<Workbook" in cached_text and "</Workbook>" in cached_text:
+        try:
+            ET.fromstring(cached_text)
+            return cached_text
+        except ET.ParseError:
+            return None
+    return None
 
 
 def fetch_djpk_xml(
@@ -366,14 +428,10 @@ def fetch_djpk_xml(
     cache_path = RAW_DJPK_DIR / f"{year}_p{periode}_{rid}.xml"
     url = djpk_url(year, periode, djpk_prov, djpk_pemda)
 
-    if cache_path.exists() and not refresh:
-        cached_text = cache_path.read_text(encoding="utf-8")
-        if "<Workbook" in cached_text and "</Workbook>" in cached_text:
-            try:
-                ET.fromstring(cached_text)
-                return rid, url, cached_text, False
-            except ET.ParseError:
-                pass
+    if not refresh:
+        cached_text = _read_valid_cached_xml(cache_path)
+        if cached_text is not None:
+            return rid, url, cached_text, False
 
     attempts = max(1, int(max_attempts))
     last_err: Exception | None = None
@@ -390,6 +448,17 @@ def fetch_djpk_xml(
             tmp_path.write_text(xml_text, encoding="utf-8")
             tmp_path.replace(cache_path)
             return rid, url, xml_text, True
+        except urllib.error.HTTPError as exc:
+            last_err = exc
+            if exc.code == 403:
+                # Fail fast on WAF/geo 403 block instead of sleeping through retries
+                break
+            if attempt < attempts - 1:
+                backoff = 1.5 * (2 ** attempt)
+                print(f"  [RETRY XML] {rid} ({exc}) -> waiting {backoff:.1f}s...", flush=True)
+                time.sleep(backoff)
+                continue
+            break
         except Exception as exc:
             last_err = exc
             if attempt < attempts - 1:
@@ -397,8 +466,17 @@ def fetch_djpk_xml(
                 print(f"  [RETRY XML] {rid} ({exc}) -> waiting {backoff:.1f}s...", flush=True)
                 time.sleep(backoff)
                 continue
-            raise
+            break
+
     assert last_err is not None
+    cached_text = _read_valid_cached_xml(cache_path)
+    if cached_text is not None:
+        print(
+            f"  [WARN] Live endpoint blocked ({_describe_fetch_error(last_err)}), "
+            f"falling back to verified cached data in {_display_cache_path(cache_path)}",
+            flush=True,
+        )
+        return rid, url, cached_text, False
     raise last_err
 
 
@@ -620,27 +698,42 @@ def fetch_bps_table(table_key: str, refresh: bool, polite_delay: float) -> dict[
             print(f"[BPS] WebAPI fallback to public table for {table_key}: {exc}")
 
     # Direct zero-auth official BPS statistics table payload
-    html = http_get_bytes(meta["url"], timeout=30).decode("utf-8", errors="replace")
-    chunks = "".join(re.findall(r'self\.__next_f\.push\(\[1,"(.*?)"\]\)', html, re.S))
-    unesc = chunks.replace('\\"', '"').replace("\\\\", "\\")
+    try:
+        html = http_get_bytes(meta["url"], timeout=30).decode("utf-8", errors="replace")
+        chunks = "".join(re.findall(r'self\.__next_f\.push\(\[1,"(.*?)"\]\)', html, re.S))
+        unesc = chunks.replace('\\"', '"').replace("\\\\", "\\")
 
-    parsed = {
-        "source_url": meta["url"],
-        "fetched_via": "bps.go.id/statistics-table",
-        "var": extract_json_field(unesc, "var") or [],
-        "vervar": extract_json_field(unesc, "vervar") or [],
-        "turvar": extract_json_field(unesc, "turvar") or [],
-        "tahun": extract_json_field(unesc, "tahun") or [],
-        "turtahun": extract_json_field(unesc, "turtahun") or [],
-        "datacontent": extract_json_field(unesc, "datacontent") or {},
-    }
-    if not parsed["datacontent"]:
-        raise RuntimeError(f"Failed to parse BPS public table payload for {table_key}")
+        parsed = {
+            "source_url": meta["url"],
+            "fetched_via": "bps.go.id/statistics-table",
+            "var": extract_json_field(unesc, "var") or [],
+            "vervar": extract_json_field(unesc, "vervar") or [],
+            "turvar": extract_json_field(unesc, "turvar") or [],
+            "tahun": extract_json_field(unesc, "tahun") or [],
+            "turtahun": extract_json_field(unesc, "turtahun") or [],
+            "datacontent": extract_json_field(unesc, "datacontent") or {},
+        }
+        if not parsed["datacontent"]:
+            raise RuntimeError(f"Failed to parse BPS public table payload for {table_key}")
 
-    cache_path.write_text(json.dumps(parsed, ensure_ascii=False), encoding="utf-8")
-    if polite_delay > 0:
-        time.sleep(polite_delay)
-    return parsed
+        cache_path.write_text(json.dumps(parsed, ensure_ascii=False), encoding="utf-8")
+        if polite_delay > 0:
+            time.sleep(polite_delay)
+        return parsed
+    except Exception as exc:
+        if cache_path.exists():
+            try:
+                cached = json.loads(cache_path.read_text(encoding="utf-8"))
+                if isinstance(cached, dict) and cached.get("datacontent"):
+                    print(
+                        f"  [WARN] Live endpoint blocked ({_describe_fetch_error(exc)}), "
+                        f"falling back to verified cached data in {_display_cache_path(cache_path)}",
+                        flush=True,
+                    )
+                    return cached
+            except Exception:
+                pass
+        raise
 
 
 def parse_bps_year_label(label: Any) -> int | None:
@@ -1062,34 +1155,45 @@ def load_base_province_geojson(refresh: bool) -> dict[str, dict[str, Any]]:
     if cache_path.exists() and not refresh:
         base_fc = json.loads(cache_path.read_text(encoding="utf-8"))
     else:
-        print(f"[GEO] Downloading authentic 38-province Indonesia boundaries from {GEOJSON_UPSTREAM_URL}...")
-        raw_gj = json.loads(http_get_bytes(GEOJSON_UPSTREAM_URL, timeout=45).decode("utf-8"))
-        simplified_features = []
-        for feat in raw_gj["features"]:
-            props = feat["properties"]
-            code = str(props["code"]).zfill(2)
-            sg = simplify_geometry(feat["geometry"], tol=0.0042, min_island_area=0.00035)
-            simplified_features.append(
-                {
-                    "type": "Feature",
-                    "properties": {
-                        "province_code": code,
-                        "province_name": props["name"],
-                        "latitude": props.get("latitude"),
-                        "longitude": props.get("longitude"),
-                    },
-                    "geometry": sg,
-                }
+        try:
+            print(f"[GEO] Downloading authentic 38-province Indonesia boundaries from {GEOJSON_UPSTREAM_URL}...")
+            raw_gj = json.loads(http_get_bytes(GEOJSON_UPSTREAM_URL, timeout=45).decode("utf-8"))
+            simplified_features = []
+            for feat in raw_gj["features"]:
+                props = feat["properties"]
+                code = str(props["code"]).zfill(2)
+                sg = simplify_geometry(feat["geometry"], tol=0.0042, min_island_area=0.00035)
+                simplified_features.append(
+                    {
+                        "type": "Feature",
+                        "properties": {
+                            "province_code": code,
+                            "province_name": props["name"],
+                            "latitude": props.get("latitude"),
+                            "longitude": props.get("longitude"),
+                        },
+                        "geometry": sg,
+                    }
+                )
+            base_fc = {
+                "type": "FeatureCollection",
+                "name": "indonesia_38_provinces_base_big_bps",
+                "features": simplified_features,
+            }
+            cache_path.write_text(
+                json.dumps(base_fc, ensure_ascii=False, separators=(",", ":")),
+                encoding="utf-8",
             )
-        base_fc = {
-            "type": "FeatureCollection",
-            "name": "indonesia_38_provinces_base_big_bps",
-            "features": simplified_features,
-        }
-        cache_path.write_text(
-            json.dumps(base_fc, ensure_ascii=False, separators=(",", ":")),
-            encoding="utf-8",
-        )
+        except Exception as exc:
+            if cache_path.exists():
+                print(
+                    f"  [WARN] Live endpoint blocked ({_describe_fetch_error(exc)}), "
+                    f"falling back to verified cached data in {_display_cache_path(cache_path)}",
+                    flush=True,
+                )
+                base_fc = json.loads(cache_path.read_text(encoding="utf-8"))
+            else:
+                raise
 
     by_code: dict[str, dict[str, Any]] = {}
     for feat in base_fc["features"]:
@@ -1145,6 +1249,13 @@ def load_kab_kota_centroids(refresh: bool) -> dict[str, list[float]]:
             print(f"  [GEO OK] Cached {len(centroids)} Kab/Kota centroids.")
             return centroids
     except Exception as exc:
+        if cache_path.exists():
+            print(
+                f"  [WARN] Live endpoint blocked ({_describe_fetch_error(exc)}), "
+                f"falling back to verified cached data in {_display_cache_path(cache_path)}",
+                flush=True,
+            )
+            return json.loads(cache_path.read_text(encoding="utf-8"))
         print(f"  [GEO WARN] Could not fetch Kab/Kota centroids ({exc}); using parent province centroids.")
     return {}
 

@@ -1,6 +1,12 @@
+import io
+import json
 import sys
+import tempfile
 import unittest
+import urllib.error
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -172,6 +178,139 @@ class TestDynamicBpsYearSelection(unittest.TestCase):
             },
         }
         self.assertEqual(etl.detect_latest_bps_year(bps_data), 2027)
+
+
+class TestBrowserHeadersAndGracefulCacheFallback(unittest.TestCase):
+    def test_http_headers_include_realistic_desktop_browser_fields(self):
+        self.assertIn("Mozilla/5.0", etl.HEADERS.get("User-Agent", ""))
+        self.assertIn("Accept", etl.HEADERS)
+        self.assertIn("id-ID", etl.HEADERS.get("Accept-Language", ""))
+        self.assertEqual(etl.HEADERS.get("Referer"), "https://www.bps.go.id/")
+        self.assertEqual(etl.HEADERS.get("Connection"), "keep-alive")
+
+    def test_fetch_bps_table_falls_back_to_cache_on_http_403_during_refresh(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bps_dir = Path(tmpdir)
+            cached_payload = {
+                "source_url": etl.BPS_TABLES["ipm_prov"]["url"],
+                "fetched_via": "bps.go.id/statistics-table",
+                "var": [{"val": 2207}],
+                "vervar": [{"val": 3100, "label": "DKI Jakarta"}],
+                "turvar": [{"val": "0"}],
+                "tahun": [{"val": 126, "label": "2026"}],
+                "turtahun": [{"val": 0}],
+                "datacontent": {"3100220701260": 84.15},
+            }
+            cache_file = bps_dir / "ipm_prov_var2207.json"
+            cache_file.write_text(json.dumps(cached_payload), encoding="utf-8")
+
+            err_403 = urllib.error.HTTPError(
+                etl.BPS_TABLES["ipm_prov"]["url"], 403, "Forbidden", hdrs=None, fp=None
+            )
+            buf = io.StringIO()
+            with (
+                mock.patch.object(etl, "RAW_BPS_DIR", bps_dir),
+                mock.patch.object(etl, "http_get_bytes", side_effect=err_403),
+                mock.patch.dict("os.environ", {"BPS_API_KEY": ""}, clear=False),
+                redirect_stdout(buf),
+            ):
+                result = etl.fetch_bps_table("ipm_prov", refresh=True, polite_delay=0.0)
+
+            self.assertEqual(result["datacontent"]["3100220701260"], 84.15)
+            out = buf.getvalue()
+            self.assertIn("[WARN]", out)
+            self.assertIn("403", out)
+
+    def test_fetch_bps_table_falls_back_to_cache_on_429_and_timeout_during_refresh(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bps_dir = Path(tmpdir)
+            cached_payload = {
+                "source_url": etl.BPS_TABLES["ipm_prov"]["url"],
+                "fetched_via": "bps.go.id/statistics-table",
+                "var": [{"val": 2207}],
+                "vervar": [],
+                "turvar": [{"val": "0"}],
+                "tahun": [{"val": 126, "label": "2026"}],
+                "turtahun": [{"val": 0}],
+                "datacontent": {"3100220701260": 84.15},
+            }
+            (bps_dir / "ipm_prov_var2207.json").write_text(json.dumps(cached_payload), encoding="utf-8")
+
+            for exc in (
+                urllib.error.HTTPError(etl.BPS_TABLES["ipm_prov"]["url"], 429, "Too Many Requests", None, None),
+                TimeoutError("timed out"),
+            ):
+                buf = io.StringIO()
+                with (
+                    mock.patch.object(etl, "RAW_BPS_DIR", bps_dir),
+                    mock.patch.object(etl, "http_get_bytes", side_effect=exc),
+                    mock.patch.dict("os.environ", {"BPS_API_KEY": ""}, clear=False),
+                    redirect_stdout(buf),
+                ):
+                    result = etl.fetch_bps_table("ipm_prov", refresh=True, polite_delay=0.0)
+                self.assertEqual(result["datacontent"]["3100220701260"], 84.15)
+                self.assertIn("[WARN]", buf.getvalue())
+
+    def test_fetch_bps_table_raises_on_403_when_no_cache_exists(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bps_dir = Path(tmpdir)
+            err_403 = urllib.error.HTTPError(
+                etl.BPS_TABLES["ipm_prov"]["url"], 403, "Forbidden", hdrs=None, fp=None
+            )
+            with (
+                mock.patch.object(etl, "RAW_BPS_DIR", bps_dir),
+                mock.patch.object(etl, "http_get_bytes", side_effect=err_403),
+                mock.patch.dict("os.environ", {"BPS_API_KEY": ""}, clear=False),
+            ):
+                with self.assertRaises(urllib.error.HTTPError):
+                    etl.fetch_bps_table("ipm_prov", refresh=True, polite_delay=0.0)
+
+    def test_fetch_djpk_xml_falls_back_to_cache_on_http_403_during_refresh(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            djpk_dir = Path(tmpdir)
+            xml_text = _make_djpk_xml(71e12, 48e12, 74e12, 43e12)
+            (djpk_dir / "2026_p12_prov-31.xml").write_text(xml_text, encoding="utf-8")
+
+            err_403 = urllib.error.HTTPError(
+                "https://djpk.kemenkeu.go.id/portal/csv_apbd", 403, "Forbidden", None, None
+            )
+            buf = io.StringIO()
+            with (
+                mock.patch.object(etl, "RAW_DJPK_DIR", djpk_dir),
+                mock.patch.object(etl, "http_get_bytes", side_effect=err_403) as mock_get,
+                redirect_stdout(buf),
+            ):
+                rid, _url, returned_xml, hit_net = etl.fetch_djpk_xml(
+                    "prov-31", 2026, 12, "09", "00", refresh=True, limiter=etl.PoliteRateLimiter(0.0)
+                )
+
+            self.assertEqual(rid, "prov-31")
+            self.assertFalse(hit_net)
+            self.assertEqual(returned_xml, xml_text)
+            self.assertEqual(mock_get.call_count, 1)
+            self.assertIn("[WARN]", buf.getvalue())
+            self.assertIn("403", buf.getvalue())
+
+    def test_fetch_djpk_pemda_catalog_falls_back_to_cache_on_http_403_during_refresh(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cat_dir = Path(tmpdir)
+            cached_cat = {"00": "Provinsi DKI Jakarta", "--": "--"}
+            (cat_dir / "2026_prov_09.json").write_text(json.dumps(cached_cat), encoding="utf-8")
+
+            err_403 = urllib.error.HTTPError(
+                "https://djpk.kemenkeu.go.id/portal/pemda/09/2026", 403, "Forbidden", None, None
+            )
+            buf = io.StringIO()
+            with (
+                mock.patch.object(etl, "RAW_DJPK_CATALOG_DIR", cat_dir),
+                mock.patch.object(etl, "http_get_bytes", side_effect=err_403),
+                redirect_stdout(buf),
+            ):
+                data, hit_net = etl.fetch_djpk_pemda_catalog("09", 2026, refresh=True, polite_delay=0.0)
+
+            self.assertEqual(data, cached_cat)
+            self.assertFalse(hit_net)
+            self.assertIn("[WARN]", buf.getvalue())
 
 
 if __name__ == "__main__":
