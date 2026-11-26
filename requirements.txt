@@ -1,0 +1,6 @@
+# Python dependencies for Kawal APBD ETL & optional AI enrichment scripts.
+# Note: scripts/etl_pipeline.py runs cleanly on Python 3.11+ standard library
+# even if optional packages are not installed.
+pandas>=2.2.0
+requests>=2.32.0
+google-genai>=1.0.0
